@@ -5,6 +5,13 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Statistics, hex grid and help
+- **World statistics** (World tab button): land, heights, counts of everything, a chart of land by
+  biome, and the largest nations by population and area.
+- **Hex grid** (Map tab) with an adjustable hex size from about 3 km to 1,000 km, anchored to the
+  world, for tabletop campaigns. Combine it with the screenshot export.
+- **F1** shows a help screen with every control and what each tab does.
+
 ### Religions, rulers and the Peoples tab
 - **Religions** are founded in great cities and spread outwards over land (and slowly by sea), some
   further than others. Names like "Way of the River", "Church of Letruddith" or "Cult of the Silent Star".

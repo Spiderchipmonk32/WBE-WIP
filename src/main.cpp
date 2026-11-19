@@ -265,6 +265,8 @@ int main() {
     int lastNationSel = -2, lastCitySel = -2;
     bool showRoutes = true, showEvents = true, showPins = true, typing = false;
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
+    bool showStats = false, showHelp = false, showHex = false;
+    float hexKmT = 0.5f;   // log slider for hex size
     char findBuf[64] = "";
     int measureTool = 0;
     int cultureSel = -1, cultureScroll = 0, religionSel = -1, religionScroll = 0, rulerScroll = 0, rulerActive = -1, lastCultureSel = -2, lastReligionSel = -2;
@@ -388,6 +390,7 @@ int main() {
             view.centerLon -= md.x / view.pxPerDeg;
             view.centerLat += md.y / view.pxPerDeg;
         }
+        if (IsKeyPressed(KEY_F1)) showHelp = !showHelp;
         if (!typing) {
             double k = 600.0 * dt / view.pxPerDeg;
             if (IsKeyDown(KEY_W)) view.centerLat += k;
@@ -517,6 +520,29 @@ int main() {
             }
         }
         if (showGrid) drawGrid(view, sw, sh, (int)(panel.x + panel.width), th.grid);
+        if (showHex) {
+            // flat-topped hexes, sized in km at the centre of the view (for tabletop games)
+            double hexKm = std::pow(10.0, 0.5 + hexKmT * 2.5);
+            double kmPerPxH = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
+            double rpx = hexKm / 2 / kmPerPxH;   // centre to corner
+            if (rpx >= 6) {
+                double hw = rpx * 1.5, hh = rpx * std::sqrt(3.0);
+                // anchor the grid to the world so it doesn't slide when panning
+                double ox = std::fmod(-view.centerLon * view.pxPerDeg * (111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180)) / kmPerPxH / view.pxPerDeg, hw * 2);
+                double oy = std::fmod(view.centerLat * view.pxPerDeg, hh);
+                Color hc = map.style() == MapStyle::Fantasy ? Color{90, 60, 35, 110} : Color{255, 255, 255, 70};
+                for (int col = -2; col * hw < sw + hw * 2; col++) {
+                    double cx = sw / 2.0 + ox + (col - (int)(sw / 2.0 / hw) - 2) * hw;
+                    for (int row = -2; row * hh < sh + hh * 2; row++) {
+                        double cy = sh / 2.0 + oy + (row - (int)(sh / 2.0 / hh) - 2) * hh + ((col & 1) ? hh / 2 : 0);
+                        if (cx < panel.x + panel.width - hw) continue;
+                        Vector2 pts[7];
+                        for (int k = 0; k <= 6; k++) pts[k] = {(float)(cx + rpx * std::cos(k * kPi / 3)), (float)(cy + rpx * std::sin(k * kPi / 3))};
+                        for (int k = 0; k < 3; k++) DrawLineV(pts[k], pts[k + 1], hc);   // three edges per hex is enough to draw the grid
+                    }
+                }
+            }
+        }
         Overlay ov = map.overlay();
         // ---- Nation names ----
         if (showLabels && ov == Overlay::Political) {
@@ -749,7 +775,9 @@ int main() {
             L.label(TextFormat("Land: %.1f%%", app.stats.landPercent));
             L.label(TextFormat("Highest: %.0f m   Deepest: %.0f m", app.stats.highestM, app.stats.deepestM));
             L.label(TextFormat("Area: %.1fM km2   Plates: %zu", app.stats.areaMkm2, app.world.plates.size()));
-            L.label(TextFormat("Volcanoes: %zu", app.world.volcanoes.size()));
+            L.label(TextFormat("Volcanoes: %zu   Rivers: %zu", app.world.volcanoes.size(), app.world.rivers.size()));
+            if (L.button("Show world statistics")) showStats = true;
+            L.note("Press F1 any time for help and keyboard shortcuts.");
             if (randomClicked) { app.ui.seed = GetRandomValue(0, 999999); genClicked = true; }
             if (genClicked) {
                 app.ui.radiusKm = std::round(radiusUi); app.ui.oceanPercent = oceanUi; app.ui.mountains = mountUi;
@@ -771,6 +799,12 @@ int main() {
             check2("Volcanoes", &showVolcanoes, "Events", &showEvents);
             check2("Lore pins", &showPins, "Minimap", &showMini);
             check2("Compass", &showCompass, "Map title", &showTitle);
+            {
+                double hexKm = std::pow(10.0, 0.5 + hexKmT * 2.5);
+                GuiCheckBox(Rectangle{L.x, L.y, 20, 20}, TextFormat("Hex grid (%s)", formatKm(hexKm)), &showHex);
+                GuiSliderBar(Rectangle{L.x + L.w / 2 + 10, L.y + 2, L.w / 2 - 10, 16}, NULL, NULL, &hexKmT, 0, 1);
+                L.y += 26;
+            }
             L.heading("OVERLAY");
             GuiListView(Rectangle{L.x, L.y, L.w, 170}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab);Temperature;Rainfall;Biomes;Wind;Ocean currents;Nations (political);Population density;Religions;Cultures", &overlayScroll, &overlayUi);
             L.y += 176;
@@ -1489,6 +1523,85 @@ int main() {
             for (int i = 0; i < 4; i++) DrawText(t[i].c_str(), bx + 10, by + 6 + i * 22, 18, i == 0 ? YELLOW : RAYWHITE);
         }
         drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
+        if (showStats) {
+            Rectangle box{(float)sw / 2 - 470, 60, 940, (float)std::min(820, sh - 120)};
+            DrawRectangle(0, 0, sw, sh, Fade(BLACK, 0.45f));
+            DrawRectangleRec(box, Color{248, 248, 244, 255});
+            DrawRectangleLinesEx(box, 2, DARKGRAY);
+            DrawText("World statistics", (int)box.x + 20, (int)box.y + 16, 26, Color{40, 40, 40, 255});
+            if (GuiButton(Rectangle{box.x + box.width - 110, box.y + 14, 90, 30}, "Close")) showStats = false;
+            int x0 = (int)box.x + 20, y = (int)box.y + 60;
+            auto text = [&](const char* t, int x, int yy, int fs = 18) { DrawText(t, x, yy, fs, Color{40, 40, 40, 255}); };
+            text(TextFormat("Land %.1f%%   Highest %.0f m   Deepest %.0f m   Area %.1fM km2", app.stats.landPercent, app.stats.highestM,
+                            app.stats.deepestM, app.stats.areaMkm2), x0, y);
+            y += 26;
+            text(TextFormat("%zu plates, %zu volcanoes, %zu rivers, %zu deposits, %zu nations, %zu cities, %zu religions, %zu events",
+                            app.world.plates.size(), app.world.volcanoes.size(), app.world.rivers.size(), app.world.deposits.size(),
+                            app.doc.nations.size(), app.doc.cities.size(), app.doc.religions.size(), app.doc.events.size()), x0, y, 16);
+            y += 34;
+            // biomes by land share
+            text("Biomes (share of land)", x0, y); y += 26;
+            std::vector<double> bArea((int)Biome::Count, 0); double landA = 0;
+            for (int i = 0; i < World::W * World::H; i++) {
+                if (app.world.biome.empty() || app.world.elev[i] <= 0) continue;
+                double a = std::cos(World::cellLat(i / World::W) * kPi / 180);
+                bArea[app.world.biome[i]] += a; landA += a;
+            }
+            int by0 = y;
+            for (int b = 2; b < (int)Biome::Count; b++) {
+                double f = landA > 0 ? bArea[b] / landA : 0;
+                unsigned char rgb[3]; biomeColor((Biome)b, rgb);
+                DrawRectangle(x0 + 190, y + 2, (int)(f * 600), 14, Color{rgb[0], rgb[1], rgb[2], 255});
+                DrawText(biomeName((Biome)b), x0, y, 15, DARKGRAY);
+                DrawText(TextFormat("%.1f%%", f * 100), x0 + 196 + (int)(f * 600), y, 15, DARKGRAY);
+                y += 19;
+            }
+            (void)by0;
+            y += 14;
+            // top nations
+            if (!app.doc.nations.empty()) {
+                std::vector<double> area; std::vector<long long> pop;
+                nationStats(app.doc, app.world, area, pop);
+                std::vector<int> ord(app.doc.nations.size());
+                for (size_t i = 0; i < ord.size(); i++) ord[i] = (int)i;
+                std::sort(ord.begin(), ord.end(), [&](int a, int b) { return pop[a] > pop[b]; });
+                text("Largest nations by city population", x0, y); y += 26;
+                long long maxP = std::max(1LL, pop[ord[0]]);
+                for (int k = 0; k < (int)ord.size() && k < 8 && y < box.y + box.height - 30; k++) {
+                    const Nation& n = app.doc.nations[ord[k]];
+                    DrawRectangle(x0 + 190, y + 2, (int)(500.0 * pop[ord[k]] / maxP), 14, Color{n.r, n.g, n.b, 255});
+                    DrawText(n.name.c_str(), x0, y, 15, DARKGRAY);
+                    DrawText(TextFormat("%lld people, %.0fk km2", pop[ord[k]], area[ord[k]] / 1000), x0 + 196 + (int)(500.0 * pop[ord[k]] / maxP), y, 15, DARKGRAY);
+                    y += 19;
+                }
+            }
+        }
+        if (showHelp) {
+            const char* help[] = {
+                "WORLDBUILDER - HELP (F1 to close)", "",
+                "Navigate:  scroll to zoom (towards the cursor), right- or middle-drag to move, WASD to move",
+                "Minimap:  click or drag on it to jump anywhere",
+                "Select:  click a city, event or lore pin on the map to open it",
+                "Sculpt tab:  1-5 switch tools, [ and ] change brush size, Ctrl+Z undo",
+                "Typing:  click a text box to type, Escape or click elsewhere to stop",
+                "", "Tabs:",
+                "  World - generate planets, templates, sea level, tectonics, statistics",
+                "  Map - style, overlays, labels, grid, hex grid, compass, find, measure",
+                "  Sculpt - raise, lower, smooth, flatten terrain; update climate afterwards",
+                "  Resources - where each resource forms and every deposit",
+                "  Climate - tilt, global temperature, rainfall, month, and climate overlays",
+                "  Nations / Cities / Peoples - countries, territory, cities, cultures, religions, rulers",
+                "  Trade - simulate the economy for an era, routes, goods and prices",
+                "  History - the year slider, events that change the map, generated histories",
+                "  Lore - wiki articles, map pins and [[links]]",
+                "  File - save, load, autosave, export images, heightmaps and data",
+            };
+            int n = (int)(sizeof(help) / sizeof(help[0]));
+            Rectangle box{(float)sw / 2 - 430, (float)sh / 2 - n * 13.f - 20, 860, n * 26.f + 40};
+            DrawRectangleRec(box, Fade(BLACK, 0.88f));
+            DrawRectangleLinesEx(box, 2, YELLOW);
+            for (int i = 0; i < n; i++) DrawText(help[i], (int)box.x + 24, (int)box.y + 20 + i * 26, i == 0 ? 22 : 18, i == 0 ? YELLOW : RAYWHITE);
+        }
         if (pendingExport > 0) {
             DrawRectangle(sw / 2 - 160, sh / 2 - 30, 320, 60, Fade(BLACK, 0.8f));
             DrawText("Exporting...", sw / 2 - MeasureText("Exporting...", 24) / 2, sh / 2 - 12, 24, RAYWHITE);
