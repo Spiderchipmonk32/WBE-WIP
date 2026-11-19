@@ -175,6 +175,9 @@ void World::generateTectonics(const Planet& planet, int seed, int plateCount, do
         }
     }
 
+    nearBoundary.assign(N, (uint8_t)Boundary::None);
+    for (int i = 0; i < N; i++) if (src[i] >= 0) nearBoundary[i] = boundary[src[i]];
+
     // 5. Uplift from each boundary type
     uplift.assign(N, 0);
     for (int i = 0; i < N; i++) {
@@ -226,11 +229,13 @@ void World::generateTectonics(const Planet& planet, int seed, int plateCount, do
             int x, y; cellOf(lat, lon, x, y);
             double height = (k == 0 ? 6500 : 5200 * std::exp(-k * 0.35)) * activity;
             double rKm = 110;   // smooth volcanic cone, measured in real distance
-            for (int dy = -5; dy <= 5; dy++)
-                for (int dx = -12; dx <= 12; dx++) {
+            int ry = (int)std::ceil(rKm * 2.6 / cellKm()) + 1;
+            int rx = std::min(W / 2, (int)std::ceil(ry / std::max(0.05, std::cos(lat * kPi / 180))) + 1);
+            for (int dy = -ry; dy <= ry; dy++)
+                for (int dx = -rx; dx <= rx; dx++) {
                     int c = idx(x + dx, y + dy);
                     double dk = angleBetween(cellDir[c], q) * radiusKm;
-                    if (dk < rKm * 3) uplift[c] += (float)(height * std::exp(-std::pow(dk / rKm, 2.0)));
+                    if (dk < rKm * 2.5) uplift[c] += (float)(height * (std::exp(-std::pow(dk / rKm, 2.0)) - std::exp(-6.25)));
                 }
             if (k < 2) volcanoes.push_back({lat, lon, true});
         }

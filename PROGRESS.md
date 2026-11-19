@@ -5,6 +5,22 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Resources placed by geology
+- 52 real resources in five groups: metals (iron, copper, gold, silver, lead, zinc, tin, tungsten, nickel,
+  cobalt, chromium, platinum, bauxite, manganese, titanium, uranium, lithium, rare earths, molybdenum,
+  mercury, vanadium, antimony), gems, fuels (coal, oil, gas, peat, oil shale), industrial minerals
+  and building stone.
+- Each has a geological recipe: e.g. copper and molybdenum above subduction zones, diamonds only in
+  very old shields, tin and tungsten in collision-belt granites, coal in old sedimentary basins, oil and
+  gas in young basins and offshore shelves, salt and lithium in dry basins.
+- About 2,100 deposits per Earth-sized planet, each with a realistic size (most small, a few giants),
+  grade and depth. Oil, gas and manganese can be offshore.
+- **Resources tab**: pick a group and a resource to see where the geology suits it (coloured heatmap)
+  and every deposit (diamond markers sized by tonnage). Hover a deposit for size, grade and depth.
+
+**Decisions:** resources that depend on climate (bauxite, peat, salt) use a stand-in climate until the
+climate simulation lands, then switch to the real one automatically.
+
 ### Tectonic plates and rock types
 - The planet is split into tectonic plates (count and activity set in the **World** tab). Each plate is
   continental or oceanic and rotates around its own pole, like Earth's plates.

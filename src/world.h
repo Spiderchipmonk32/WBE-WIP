@@ -25,6 +25,23 @@ struct Plate {
 
 struct Volcano { double lat, lon; bool hotspot; };
 
+enum class ResGroup : uint8_t { Metal, Gem, Fuel, Industrial, Building, Count };
+struct ResourceDef {
+    const char* name;
+    ResGroup group;
+    unsigned char r, g, b;
+    double typicalTonnes;   // typical deposit size (ore or material, tonnes)
+    double gradeLo, gradeHi; // % metal/content in the ore (or purity)
+    double depthLo, depthHi; // metres below the surface
+    int abundance;          // how many deposits on an Earth-sized planet
+    bool offshoreOk;
+    const char* setting;    // where it forms, in words
+};
+struct Deposit { int res; double lat, lon; double tonnes, grade, depthM; bool offshore; };
+
+const std::vector<ResourceDef>& resourceDefs();
+const char* resGroupName(ResGroup g);
+
 class World {
 public:
     static constexpr int W = 720, H = 360;   // cells (0.5 degrees)
@@ -51,12 +68,26 @@ public:
     std::vector<uint8_t> rock;          // Rock per cell
     std::vector<float> rockAge;         // million years
     std::vector<float> distBoundaryKm;  // distance to the nearest plate boundary
+    std::vector<uint8_t> nearBoundary;  // type of that nearest boundary
     std::vector<Volcano> volcanoes;
     Vec3d plateVelocity(int cell) const;  // surface velocity, cm/year-ish
 
     // Coarse elevation (metres) sampled from the full planet, including tectonics and sculpting
     void sampleElevation(const Planet& planet);
     std::vector<float> elev;
+
+    // ---- resources (resources.cpp) ----
+    void generateResources(int seed);
+    std::vector<float> favorability(int res) const;    // 0..1 per cell: how likely the geology suits it
+    std::vector<Deposit> deposits;
+    int selectedRes = -1;                  // resource shown by the Resource overlay
+    std::vector<float> selectedFavor;      // its favourability field
+    std::vector<int> depositsNear(double lat, double lon, double km, size_t maxCount) const;
+    double totalTonnes(int res) const;
+
+    // ---- climate (climate.cpp); empty until generated ----
+    std::vector<float> rainfallYear;   // mm per year
+    std::vector<float> tempYear;       // mean degC
 
     double radiusKm = 6371;
     std::vector<Vec3d> cellDir;         // unit direction per cell

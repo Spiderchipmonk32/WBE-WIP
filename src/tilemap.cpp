@@ -100,6 +100,13 @@ bool TileMap::overlayColor(Overlay o, int param, double lat, double lon, double 
             if (st < 0.05) return false;
             return set(255, 220 - 200 * st, 40, clampd(st * 1.1, 0, 0.8));
         }
+        case Overlay::Resource: {
+            if (world_->selectedFavor.empty() || world_->selectedRes < 0) return false;
+            double f = World::sample(world_->selectedFavor, lat, lon);
+            if (f < 0.04) return false;
+            const ResourceDef& d = resourceDefs()[world_->selectedRes];
+            return set(d.r, d.g, d.b, clampd(f * 0.85, 0, 0.8));
+        }
         default: return false;
     }
 }

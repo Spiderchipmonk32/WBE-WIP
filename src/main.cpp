@@ -19,6 +19,13 @@ const char* formatKm(double km) {
 
 double wrapLon(double lon) { return lon - 360.0 * std::floor((lon + 180.0) / 360.0); }
 
+const char* formatTonnes(double t) {
+    if (t >= 1e9) return TextFormat("%.1f billion t", t / 1e9);
+    if (t >= 1e6) return TextFormat("%.1f million t", t / 1e6);
+    if (t >= 1e3) return TextFormat("%.1f thousand t", t / 1e3);
+    return TextFormat("%.0f t", t);
+}
+
 struct Theme { Color bg, grid, text; };
 Theme themeFor(MapStyle s) {
     if (s == MapStyle::Fantasy) return {{214, 200, 164, 255}, {110, 80, 50, 90}, {70, 50, 30, 255}};
@@ -92,6 +99,9 @@ struct App {
         world.generateTectonics(planet, ui.seed, ui.plateCount, ui.tectonicActivity);
         planet.setUplift(&world.uplift);
         world.sampleElevation(planet);
+        world.generateResources(ui.seed);
+        world.selectedFavor.clear();
+        if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
         map->reset();
         stats = planet.computeStats();
     }
@@ -116,6 +126,7 @@ int main() {
     int tool = 0;
     int styleUi = 0;
     int overlayUi = 0, overlayScroll = 0;
+    int resGroupUi = 0, resListScroll = 0, resListActive = -1;
     float brushT = 0.80f, strengthT = 0.851f;
     float radiusUi = app.ui.radiusKm, oceanUi = app.ui.oceanPercent, mountUi = app.ui.mountains, contUi = app.ui.continentSize;
     float platesUi = (float)app.ui.plateCount, activityUi = app.ui.tectonicActivity;
@@ -233,6 +244,24 @@ int main() {
                 DrawTriangleLines({p.x, p.y - 7}, {p.x - 6, p.y + 5}, {p.x + 6, p.y + 5}, BLACK);
             }
         }
+        int hoverDeposit = -1;
+        if (ov == Overlay::Resource && app.world.selectedRes >= 0) {
+            const ResourceDef& d = resourceDefs()[app.world.selectedRes];
+            float bestD = 12;
+            for (int i = 0; i < (int)app.world.deposits.size(); i++) {
+                const Deposit& dp = app.world.deposits[i];
+                if (dp.res != app.world.selectedRes) continue;
+                Vector2 p = toScreen(dp.lat, dp.lon);
+                if (p.x < panel.x + panel.width || p.x > sw || p.y < 0 || p.y > sh) continue;
+                float r = (float)clampd(2 + std::log10(std::max(1.0, dp.tonnes / d.typicalTonnes * 10)) * 3, 3, 9);
+                Vector2 a{p.x, p.y - r}, b{p.x + r, p.y}, c{p.x, p.y + r}, e{p.x - r, p.y};
+                Color col{d.r, d.g, d.b, 255};
+                DrawTriangle(a, e, c, col); DrawTriangle(a, c, b, col);
+                DrawLineV(a, b, BLACK); DrawLineV(b, c, BLACK); DrawLineV(c, e, BLACK); DrawLineV(e, a, BLACK);
+                float dx = p.x - mouse.x, dy = p.y - mouse.y, dd = std::sqrt(dx * dx + dy * dy);
+                if (dd < bestD) { bestD = dd; hoverDeposit = i; }
+            }
+        }
         if (hit && activeTool > 0) {
             double kmPerDeg = 111.195 * R / 6371.0;
             float ry = (float)(brushKm / kmPerDeg * view.pxPerDeg);
@@ -243,7 +272,7 @@ int main() {
         // ---- Panel ----
         GuiPanel(panel, NULL);
         Layout L{panel.x + 14, panel.y + 12, panel.width - 28};
-        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "World;Map;Sculpt", &tab);
+        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 12) / 4, 28}, "World;Map;Sculpt;Resources", &tab);
         L.y += 40;
 
         if (tab == 0) {
@@ -278,7 +307,7 @@ int main() {
             L.check("Latitude/longitude grid", &showGrid);
             L.check("Volcano markers", &showVolcanoes);
             L.heading("OVERLAY");
-            GuiListView(Rectangle{L.x, L.y, L.w, 150}, "None;Tectonic plates;Rock types;Earthquake zones", &overlayScroll, &overlayUi);
+            GuiListView(Rectangle{L.x, L.y, L.w, 150}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab)", &overlayScroll, &overlayUi);
             L.y += 160;
             // legend
             if (overlayUi == 1) {
@@ -293,6 +322,38 @@ int main() {
                 L.legend(Color{255, 210, 40, 255}, "Some earthquake risk");
                 L.legend(Color{255, 30, 40, 255}, "High earthquake risk");
             }
+        } else if (tab == 3) {
+            L.heading("RESOURCES");
+            GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 26}, "Metals;Gems;Fuels\nIndustrial;Building", &resGroupUi);
+            L.y += 62;
+            const auto& defs = resourceDefs();
+            std::vector<int> ids;
+            std::string items;
+            for (int r = 0; r < (int)defs.size(); r++)
+                if ((int)defs[r].group == resGroupUi) { if (!items.empty()) items += ";"; items += defs[r].name; ids.push_back(r); }
+            int prevActive = resListActive;
+            GuiListView(Rectangle{L.x, L.y, L.w, 230}, items.c_str(), &resListScroll, &resListActive);
+            L.y += 240;
+            if (resListActive >= (int)ids.size()) resListActive = -1;
+            int chosen = resListActive >= 0 ? ids[resListActive] : -1;
+            if ((resListActive != prevActive || chosen != app.world.selectedRes) && chosen >= 0 && chosen != app.world.selectedRes) {
+                map.waitIdle();
+                app.world.selectedRes = chosen;
+                app.world.selectedFavor = app.world.favorability(chosen);
+                map.invalidateAll();
+                overlayUi = 4;
+            }
+            if (chosen >= 0) {
+                const ResourceDef& d = defs[chosen];
+                int count = 0; double biggest = 0;
+                for (const Deposit& dp : app.world.deposits) if (dp.res == chosen) { count++; biggest = std::max(biggest, dp.tonnes); }
+                L.label(TextFormat("%d deposits, %s in total", count, formatTonnes(app.world.totalTonnes(chosen))));
+                L.label(TextFormat("Largest: %s", formatTonnes(biggest)));
+                L.note(TextFormat("Forms in: %s.", d.setting));
+                L.note("Coloured areas show where the geology suits it; diamonds mark deposits. Hover a deposit for details.");
+            } else {
+                L.note("Pick a resource to see where it forms and where the deposits are.");
+            }
         } else if (tab == 2) {
             L.heading("SCULPT");
             GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Pan;Raise;Lower\nSmooth;Flatten", &tool);
@@ -303,9 +364,10 @@ int main() {
             L.note("Left-drag on the map to sculpt. Keys 1-5 switch tools, [ and ] resize the brush.");
         }
         if ((MapStyle)styleUi != map.style()) map.setStyle((MapStyle)styleUi);
-        static const Overlay overlayList[] = {Overlay::None, Overlay::Plates, Overlay::Rock, Overlay::Earthquakes};
+        static const Overlay overlayList[] = {Overlay::None, Overlay::Plates, Overlay::Rock, Overlay::Earthquakes, Overlay::Resource};
+        const int overlayCount = (int)(sizeof(overlayList) / sizeof(overlayList[0]));
         if (overlayUi < 0) overlayUi = 0;
-        map.setOverlay(overlayList[std::min(overlayUi, 3)], 0);
+        map.setOverlay(overlayList[std::min(overlayUi, overlayCount - 1)], app.world.selectedRes);
 
         // ---- Readouts ----
         const int fs = 18;
@@ -330,6 +392,21 @@ int main() {
             int bh = 5 * 22 + 14;
             DrawRectangle(sw - tw - 30, sh - bh - 10, tw + 20, bh, Fade(BLACK, 0.6f));
             for (int i = 0; i < 5; i++) DrawText(lines[i].c_str(), sw - tw - 20, sh - bh - 3 + i * 22, fs, RAYWHITE);
+        }
+        if (hoverDeposit >= 0) {
+            const Deposit& dp = app.world.deposits[hoverDeposit];
+            const ResourceDef& d = resourceDefs()[dp.res];
+            std::string t[4] = {std::string(d.name) + (dp.offshore ? " (offshore)" : ""),
+                                TextFormat("Size: %s", formatTonnes(dp.tonnes)),
+                                d.gradeLo >= 100 || d.group == ResGroup::Building ? std::string("")
+                                    : std::string(TextFormat("Grade: %.4g%%", dp.grade)),
+                                TextFormat("Depth: %.0f m", dp.depthM)};
+            int tw = 0;
+            for (auto& x : t) tw = std::max(tw, MeasureText(x.c_str(), 18));
+            int bx = (int)mouse.x + 16, by = (int)mouse.y + 10;
+            if (bx + tw + 20 > sw) bx = (int)mouse.x - tw - 36;
+            DrawRectangle(bx, by, tw + 20, 4 * 22 + 12, Fade(BLACK, 0.75f));
+            for (int i = 0; i < 4; i++) DrawText(t[i].c_str(), bx + 10, by + 6 + i * 22, 18, i == 0 ? YELLOW : RAYWHITE);
         }
         drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
         DrawText("Scroll: zoom   Right/middle-drag or WASD: move", (int)(panel.x + panel.width) + 24, sh - 28, 16, Fade(th.text, 0.8f));
