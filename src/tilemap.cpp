@@ -1,6 +1,8 @@
 #include "tilemap.h"
 #include <algorithm>
 #include <cmath>
+#include <atomic>
+#include <cstring>
 
 namespace {
 constexpr double kKmPerDeg = 111.195;   // per degree of latitude on an Earth-sized planet (scaled below)
@@ -391,6 +393,31 @@ void TileMap::update(const MapView& v, int sw, int sh) {
             cache_.erase(old[i].second);
         }
     }
+}
+
+void TileMap::renderWorld(int level, std::vector<unsigned char>& out, int& w, int& h) const {
+    int cols = 4 << level, rows = 2 << level;
+    w = cols * TILE; h = rows * TILE;
+    out.assign((size_t)w * h * 4, 255);
+    std::vector<Stroke> all = planet_->strokes();
+    std::atomic<int> next{0};
+    int total = cols * rows;
+    auto work = [&]() {
+        std::vector<unsigned char> buf;
+        for (;;) {
+            int k = next++;
+            if (k >= total) break;
+            int tx = k % cols, ty = k / cols;
+            Job j{level, tx, ty, 0, style_, overlay_, overlayParam_, all};
+            render(j, buf);
+            for (int y = 0; y < TILE; y++)
+                std::memcpy(&out[(((size_t)ty * TILE + y) * w + (size_t)tx * TILE) * 4], &buf[(size_t)y * TILE * 4], TILE * 4);
+        }
+    };
+    unsigned n = std::max(2u, std::thread::hardware_concurrency());
+    std::vector<std::thread> th;
+    for (unsigned i = 0; i < n; i++) th.emplace_back(work);
+    for (auto& t : th) t.join();
 }
 
 bool TileMap::drawTile(int l, int tx, int ty, Rectangle dst) {

@@ -5,6 +5,12 @@
 #include "world.h"
 #include "tilemap.h"
 #include "ui.h"
+#include "persistence.h"
+#include <vector>
+#include <thread>
+#include <fstream>
+#include <cstring>
+#include <cstdint>
 #include <cmath>
 #include <algorithm>
 #include <string>
@@ -85,10 +91,14 @@ void localAxes(double lat, double lon, Vec3d& east, Vec3d& north) {
 
 } // namespace
 
+enum Tab { TabWorld, TabMap, TabSculpt, TabResources, TabClimate, TabNations, TabCities, TabTrade, TabHistory, TabLore, TabFile };
+
 struct App {
     PlanetSettings ui;
     Planet planet;
     World world;
+    Document doc;
+    int styleUi = 0;
     TileMap* map = nullptr;
     PlanetStats stats;
     MapView view;
@@ -107,6 +117,21 @@ struct App {
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
         map->reset();
         stats = planet.computeStats();
+    }
+    SaveData makeSave() const {
+        SaveData d;
+        d.settings = ui; d.strokes = planet.strokes();
+        d.viewLon = view.centerLon; d.viewLat = view.centerLat; d.viewZoom = view.pxPerDeg; d.style = styleUi;
+        d.doc = doc;
+        return d;
+    }
+    void applySave(const SaveData& d) {
+        ui = d.settings;
+        regenerate();
+        if (!d.strokes.empty()) { planet.setStrokes(d.strokes); recalcClimate(); stats = planet.computeStats(); }
+        view.centerLon = d.viewLon; view.centerLat = d.viewLat; view.pxPerDeg = d.viewZoom;
+        styleUi = d.style;
+        doc = d.doc;
     }
     // After sculpting or changing the tilt: re-run the climate on the new terrain
     void recalcClimate() {
@@ -139,14 +164,26 @@ int main() {
     bool seedEdit = false, painting = false, panning = false, showGrid = true, showVolcanoes = true, showRivers = true;
     int tab = 0;
     int tool = 0;
-    int styleUi = 0;
+    int& styleUi = app.styleUi;
     int overlayUi = 0, overlayScroll = 0;
     int resGroupUi = 0, resListScroll = 0, resListActive = -1;
-    float monthUi = 12, tiltUi = app.ui.axialTilt;
-    int climateViewUi = -1;
-    float brushT = 0.80f, strengthT = 0.851f;
     float radiusUi = app.ui.radiusKm, oceanUi = app.ui.oceanPercent, mountUi = app.ui.mountains, contUi = app.ui.continentSize;
     float platesUi = (float)app.ui.plateCount, activityUi = app.ui.tectonicActivity;
+    float monthUi = 12, tiltUi = app.ui.axialTilt;
+    char nameBuf[64] = "my world";
+    bool nameEdit = false, autosave = true;
+    int savedScroll = 0, savedActive = -1;
+    std::vector<std::string> savedWorlds = listSavedWorlds();
+    std::string status;
+    double statusTime = -100, lastAutosave = GetTime();
+    int pendingExport = 0;   // runs on the frame after the button, so the "working" message shows
+    auto syncSliders = [&]() {
+        radiusUi = app.ui.radiusKm; oceanUi = app.ui.oceanPercent; mountUi = app.ui.mountains; contUi = app.ui.continentSize;
+        platesUi = (float)app.ui.plateCount; activityUi = app.ui.tectonicActivity; tiltUi = app.ui.axialTilt;
+    };
+    auto setStatus = [&](const std::string& t) { status = t; statusTime = GetTime(); };
+    int climateViewUi = -1;
+    float brushT = 0.80f, strengthT = 0.851f;
 
     while (!WindowShouldClose()) {
         const float dt = GetFrameTime();
@@ -333,8 +370,8 @@ int main() {
         // ---- Panel ----
         GuiPanel(panel, NULL);
         Layout L{panel.x + 14, panel.y + 12, panel.width - 28};
-        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 12) / 4, 28}, "World;Map;Sculpt;Resources\nClimate", &tab);
-        L.y += 72;
+        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 12) / 4, 28}, "World;Map;Sculpt;Resources\nClimate;Nations;Cities;Trade\nHistory;Lore;File", &tab);
+        L.y += 104;
         const int month = (int)std::round(monthUi);
 
         if (tab == 0) {
@@ -444,6 +481,43 @@ int main() {
                 L.legend(Color{60, 140, 255, 255}, "Cold current");
                 L.note("Arrows show surface currents. Cold currents make coastal deserts; warm ones mild, wet coasts.");
             }
+        } else if (tab == TabFile) {
+            L.heading("SAVE");
+            GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Name");
+            if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60, 28}, nameBuf, 63, nameEdit)) nameEdit = !nameEdit;
+            L.y += 36;
+            if (L.button("Save world")) {
+                std::string err, name = nameBuf;
+                for (char& ch : name) if (std::strchr("\\/:*?\"<>|", ch)) ch = '_';
+                if (name.empty()) name = "untitled";
+                if (saveWorld(worldsFolder() + "/" + name + ".world", app.makeSave(), err)) setStatus("Saved " + name);
+                else setStatus(err);
+                savedWorlds = listSavedWorlds();
+            }
+            L.check("Autosave every 3 minutes", &autosave);
+            L.heading("LOAD");
+            std::string items;
+            for (auto& w : savedWorlds) { if (!items.empty()) items += ";"; items += w; }
+            GuiListView(Rectangle{L.x, L.y, L.w, 150}, items.c_str(), &savedScroll, &savedActive);
+            L.y += 160;
+            if (L.button("Load selected world") && savedActive >= 0 && savedActive < (int)savedWorlds.size()) {
+                SaveData d; std::string err;
+                if (loadWorld(worldsFolder() + "/" + savedWorlds[savedActive] + ".world", d, err)) {
+                    app.applySave(d);
+                    syncSliders();
+                    std::strncpy(nameBuf, savedWorlds[savedActive].c_str(), 63);
+                    setStatus("Loaded " + savedWorlds[savedActive]);
+                } else setStatus(err);
+            }
+            L.heading("EXPORT");
+            if (L.button("Screenshot of this view (PNG)")) pendingExport = 1;
+            if (L.button("Whole world map image (PNG)")) pendingExport = 2;
+            if (L.button("Heightmap (16-bit RAW + PNG)")) pendingExport = 3;
+            if (L.button("Resource deposits (CSV)")) pendingExport = 4;
+            L.note(("Files go in: " + exportsFolder()).c_str());
+        } else if (tab >= TabNations && tab <= TabLore) {
+            L.heading("COMING SOON");
+            L.note("This part of the world builder is still being built. See PROGRESS.md in the project for what's done.");
         } else if (tab == 2) {
             L.heading("SCULPT");
             GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Pan;Raise;Lower\nSmooth;Flatten", &tool);
@@ -513,8 +587,102 @@ int main() {
             for (int i = 0; i < 4; i++) DrawText(t[i].c_str(), bx + 10, by + 6 + i * 22, 18, i == 0 ? YELLOW : RAYWHITE);
         }
         drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
+        if (pendingExport > 0) {
+            DrawRectangle(sw / 2 - 160, sh / 2 - 30, 320, 60, Fade(BLACK, 0.8f));
+            DrawText("Exporting...", sw / 2 - MeasureText("Exporting...", 24) / 2, sh / 2 - 12, 24, RAYWHITE);
+        }
+        if (GetTime() - statusTime < 6) {
+            int tw = MeasureText(status.c_str(), 20);
+            DrawRectangle(sw / 2 - tw / 2 - 14, 54, tw + 28, 36, Fade(BLACK, 0.75f));
+            DrawText(status.c_str(), sw / 2 - tw / 2, 62, 20, YELLOW);
+        }
         DrawText("Scroll: zoom   Right/middle-drag or WASD: move", (int)(panel.x + panel.width) + 24, sh - 28, 16, Fade(th.text, 0.8f));
         EndDrawing();
+
+        // ---- Exports (after the frame, so the message above is visible while it works) ----
+        static int exportFrames = 0;
+        if (pendingExport > 0 && ++exportFrames >= 2) {
+            exportFrames = 0;
+            int kind = pendingExport;
+            pendingExport = 0;
+            std::string base = exportsFolder() + "/" + std::string(nameBuf);
+            for (char& ch : base) if (ch == ' ') ch = '_';
+            if (kind == 1) {
+                Image img = LoadImageFromScreen();
+                std::string f = base + TextFormat("_view_%d.png", (int)GetTime());
+                ExportImage(img, f.c_str());
+                UnloadImage(img);
+                setStatus("Saved " + f);
+            } else if (kind == 2) {
+                std::vector<unsigned char> px; int w, h;
+                map.renderWorld(3, px, w, h);   // 8192 x 4096
+                Image img{px.data(), w, h, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+                if (showRivers) {
+                    Color rc = map.style() == MapStyle::Fantasy ? Color{70, 95, 125, 255} : Color{45, 105, 200, 255};
+                    for (const World::River& r : app.world.rivers) {
+                        if (r.q.back() < 250) continue;
+                        for (size_t k = 1; k < r.pts.size(); k++) {
+                            if (r.q[k] < 250) continue;
+                            auto pos = [&](const Vec3d& p) {
+                                double lat = std::asin(clampd(p.y, -1, 1)) * 180 / kPi, lon = std::atan2(p.x, p.z) * 180 / kPi;
+                                return Vector2{(float)((lon + 180) / 360 * w), (float)((90 - lat) / 180 * h)};
+                            };
+                            Vector2 a = pos(r.pts[k - 1]), b = pos(r.pts[k]);
+                            if (std::fabs(a.x - b.x) > w / 2) continue;
+                            int thick = r.q[k] > 5000 ? 3 : (r.q[k] > 1200 ? 2 : 1);
+                            for (int t = 0; t < thick; t++) ImageDrawLine(&img, (int)a.x + t, (int)a.y, (int)b.x + t, (int)b.y, rc);
+                        }
+                    }
+                }
+                std::string f = base + "_world_map.png";
+                ExportImage(img, f.c_str());
+                setStatus("Saved " + f);
+            } else if (kind == 3) {
+                const int w = 4096, h = 2048;
+                std::vector<float> hm((size_t)w * h);
+                int oct = Planet::detailOctavesFor(2 * kPi * app.planet.radiusKm() / w, app.planet.radiusKm());
+                std::vector<std::thread> th;
+                unsigned n = std::max(2u, std::thread::hardware_concurrency());
+                for (unsigned t = 0; t < n; t++)
+                    th.emplace_back([&, t]() {
+                        for (int y = (int)t; y < h; y += (int)n) {
+                            double lat = 90 - (y + 0.5) * 180.0 / h;
+                            for (int x = 0; x < w; x++) hm[(size_t)y * w + x] = (float)app.planet.elevation(TileMap::dirFromLatLon(lat, -180 + (x + 0.5) * 360.0 / w), oct);
+                        }
+                    });
+                for (auto& t : th) t.join();
+                float lo = 1e9f, hi = -1e9f;
+                for (float v : hm) { lo = std::min(lo, v); hi = std::max(hi, v); }
+                std::vector<uint16_t> raw(hm.size());
+                std::vector<unsigned char> gray(hm.size());
+                for (size_t i = 0; i < hm.size(); i++) {
+                    double k = (hm[i] - lo) / std::max(1.0f, hi - lo);
+                    raw[i] = (uint16_t)(k * 65535); gray[i] = (unsigned char)(k * 255);
+                }
+                std::ofstream o(base + "_heightmap_4096x2048.r16", std::ios::binary);
+                o.write((const char*)raw.data(), raw.size() * 2);
+                std::ofstream info(base + "_heightmap_info.txt");
+                info << "4096 x 2048, 16-bit little-endian, equirectangular (longitude -180..180, latitude 90..-90)\n"
+                     << "0 = " << lo << " m, 65535 = " << hi << " m\n";
+                Image img{gray.data(), w, h, 1, PIXELFORMAT_UNCOMPRESSED_GRAYSCALE};
+                ExportImage(img, (base + "_heightmap_preview.png").c_str());
+                setStatus("Saved heightmap to " + exportsFolder());
+            } else if (kind == 4) {
+                std::ofstream o(base + "_deposits.csv");
+                o << "resource,group,latitude,longitude,tonnes,grade_percent,depth_m,offshore\n";
+                for (const Deposit& d : app.world.deposits) {
+                    const ResourceDef& rd = resourceDefs()[d.res];
+                    o << "\"" << rd.name << "\"," << resGroupName(rd.group) << "," << d.lat << "," << d.lon << "," << d.tonnes << ","
+                      << d.grade << "," << d.depthM << "," << (d.offshore ? "yes" : "no") << "\n";
+                }
+                setStatus("Saved " + base + "_deposits.csv");
+            }
+        }
+        if (autosave && GetTime() - lastAutosave > 180) {
+            lastAutosave = GetTime();
+            std::string err;
+            saveWorld(worldsFolder() + "/autosave.world", app.makeSave(), err);
+        }
     }
 
     map.shutdown();

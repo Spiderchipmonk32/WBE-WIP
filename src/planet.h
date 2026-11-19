@@ -57,6 +57,8 @@ public:
     void strokesNear(const Vec3d& dir, double angRadius, std::vector<int>& out) const;
     std::vector<Stroke> strokesCopyNear(const Vec3d& dir, double angRadius) const;
     size_t strokeCount() const { return strokes_.size(); }
+    const std::vector<Stroke>& strokes() const { return strokes_; }
+    void setStrokes(const std::vector<Stroke>& s);   // restore sculpting from a save file
 
     PlanetStats computeStats() const;
     // Large-scale uplift from tectonics (metres on the World grid); nullptr = none

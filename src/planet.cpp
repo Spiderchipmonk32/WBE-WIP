@@ -188,6 +188,12 @@ void Planet::addDab(BrushType type, const Vec3d& dir, double radiusKm, double am
     strokes_.push_back(s);
 }
 
+void Planet::setStrokes(const std::vector<Stroke>& s) {
+    strokes_ = s;
+    group_ = 0;
+    for (auto& st : strokes_) group_ = std::max(group_, st.group);
+}
+
 std::vector<std::pair<Vec3d, double>> Planet::undo() {
     std::vector<std::pair<Vec3d, double>> touched;
     if (strokes_.empty()) return touched;

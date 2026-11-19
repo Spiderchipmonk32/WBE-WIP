@@ -5,6 +5,18 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Save, load, autosave and exports (File tab)
+- **Save** your world under a name; **Load** any saved world from the list. Worlds are stored in a
+  `worlds` folder next to the program as small text files: the settings and seed rebuild everything
+  generated, plus your sculpting and (as they arrive) nations, cities, history and notes.
+- **Autosave** every 3 minutes to `worlds/autosave.world` (can be turned off).
+- **Exports** (to an `exports` folder): a screenshot of the current view, the **whole world map** as an
+  8192 x 4096 PNG in the current style and overlay (with rivers), a **4096 x 2048 16-bit heightmap**
+  (RAW plus a PNG preview and a text file with the height range, for game engines), and every
+  **resource deposit as CSV**.
+- The tab bar now shows all planned sections; Nations, Cities, Trade, History and Lore say
+  "coming soon" until they're built.
+
 ### Rivers and lakes
 - Water drains from every point to the sea: basins fill up into **lakes** until they spill over, and
   in dry regions they evaporate into **salt flats** instead.
