@@ -3,6 +3,7 @@
 #include "noise.h"
 #include <vector>
 #include <utility>
+#include <string>
 
 // Everything about the planet that doesn't depend on graphics.
 // Elevation is a pure function of direction, so it can be sampled at any resolution:
@@ -21,6 +22,7 @@ struct PlanetSettings {
     float rainMultiplier = 1.f;
     float seaLevel = 0.f;         // metres: positive floods coasts, negative exposes shelves
     float erosion = 1.f;          // how much rivers and time wear the land down
+    std::string importPath;       // image used as the land shape (empty = none)
 };
 
 enum class BrushType { Raise = 1, Lower = 2, Smooth = 3, Flatten = 4 };
@@ -73,6 +75,10 @@ public:
     // Large-scale uplift from tectonics (metres on the World grid); nullptr = none
     void setUplift(const std::vector<float>* uplift) { uplift_ = uplift; }
     void setErosion(const std::vector<float>* erosion) { erosion_ = erosion; }
+    // Use a greyscale image (equirectangular, 0..1, dark = deep, bright = high) as the land shape
+    void setImport(const std::vector<float>& v, int w, int h) { import_ = v; importW_ = w; importH_ = h; }
+    void clearImport() { import_.clear(); importW_ = importH_ = 0; }
+    bool hasImport() const { return !import_.empty(); }
     // Climate fields on the World grid (sea-level temperature, annual rain) used for map colours
     void setClimate(const std::vector<float>* tempSeaLevel, const std::vector<float>* rainYear) { climT_ = tempSeaLevel; climR_ = rainYear; }
     static void colorFor(double elevM, unsigned char rgb[3]);
@@ -93,6 +99,8 @@ private:
     std::vector<Stroke> eventStrokes_;
     const std::vector<float>* uplift_ = nullptr;
     const std::vector<float>* erosion_ = nullptr;
+    std::vector<float> import_;
+    int importW_ = 0, importH_ = 0;
     const std::vector<float>* climT_ = nullptr;
     const std::vector<float>* climR_ = nullptr;
     int group_ = 0;

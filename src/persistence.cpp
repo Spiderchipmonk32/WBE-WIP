@@ -61,6 +61,7 @@ bool saveWorld(const std::string& path, const SaveData& d, std::string& err) {
           << "activity " << s.tectonicActivity << "\n" << "tilt " << s.axialTilt << "\n"
           << "climate " << s.tempOffset << " " << s.rainMultiplier << " " << s.seaLevel << "\n"
           << "erosion " << s.erosion << "\n";
+        if (!s.importPath.empty()) o << "import " << quote(s.importPath) << "\n";
         o << "view " << d.viewLon << " " << d.viewLat << " " << d.viewZoom << " " << d.style << "\n";
         for (const Stroke& st : d.strokes)
             o << "stroke " << (int)st.type << " " << st.dir.x << " " << st.dir.y << " " << st.dir.z << " " << st.radiusKm << " "
@@ -97,6 +98,7 @@ bool loadWorld(const std::string& path, SaveData& d, std::string& err) {
         else if (key == "tilt") ls >> s.axialTilt;
         else if (key == "climate") ls >> s.tempOffset >> s.rainMultiplier >> s.seaLevel;
         else if (key == "erosion") ls >> s.erosion;
+        else if (key == "import") { size_t pos = (size_t)ls.tellg(); if (pos != std::string::npos) unquote(line, pos, s.importPath); }
         else if (key == "view") ls >> d.viewLon >> d.viewLat >> d.viewZoom >> d.style;
         else if (key == "stroke") {
             Stroke st{}; int t;

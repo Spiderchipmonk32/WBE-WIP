@@ -68,6 +68,17 @@ void Planet::generate(const PlanetSettings& s) {
 
 double Planet::baseRaw(const Vec3d& d) const {
     double x = d.x, y = d.y, z = d.z;
+    if (!import_.empty()) {
+        // the imported image sets the shape; noise adds natural coastlines and ranges
+        double lat = std::asin(clampd(y, -1, 1)) * 180 / kPi, lon = std::atan2(x, z) * 180 / kPi;
+        double fx = (lon + 180) / 360 * importW_ - 0.5, fy = (90 - lat) / 180 * importH_ - 0.5;
+        int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
+        double tx = fx - x0, ty = fy - y0;
+        auto at = [&](int xx, int yy) { xx = ((xx % importW_) + importW_) % importW_; yy = std::max(0, std::min(importH_ - 1, yy)); return import_[yy * importW_ + xx]; };
+        double v = (at(x0, y0) * (1 - tx) + at(x0 + 1, y0) * tx) * (1 - ty) + (at(x0, y0 + 1) * (1 - tx) + at(x0 + 1, y0 + 1) * tx) * ty;
+        double m = ridged(nMtn_, x * 3.2, y * 3.2, z * 3.2, 5);
+        return (v - 0.5) * 1.3 + 0.07 * fbm(nSmall_, x * 9, y * 9, z * 9, 4) + settings_.mountains * 0.12 * m * m * smoothstepd(0.45, 0.7, v);
+    }
     double wx = fbm(nWarp_, x * 1.6 + 11, y * 1.6, z * 1.6, 3);
     double wy = fbm(nWarp_, x * 1.6, y * 1.6 + 23, z * 1.6, 3);
     double wz = fbm(nWarp_, x * 1.6, y * 1.6, z * 1.6 + 37, 3);

@@ -5,6 +5,15 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Import images
+- **Drag a PNG/JPG onto the window** and choose:
+  - **The land shape**: the image (a whole-world map, twice as wide as tall; dark = sea, bright = high
+    land) becomes the planet. Ocean cover is set from the dark area so the coast follows your drawing;
+    noise adds natural coastlines and mountains, and plates, climate, rivers and the rest are built on it.
+    The image path is saved with the world. "Stop using the image" in the World tab goes back to random land.
+  - **A tracing layer**: shown over the map with adjustable transparency (Map tab), to copy an existing map.
+- You can also drop a `.world` file onto the window to open it.
+
 ### Erosion
 - New **Erosion** slider (World tab). Rivers carve valleys (deeper for bigger rivers) and time wears
   mountains down according to the age of their rock: ancient ranges become rolling forested hills,

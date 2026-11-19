@@ -101,6 +101,21 @@ void localAxes(double lat, double lon, Vec3d& east, Vec3d& north) {
 
 enum Tab { TabWorld, TabMap, TabSculpt, TabResources, TabClimate, TabNations, TabCities, TabTrade, TabHistory, TabLore, TabFile, TabPeoples };
 
+// Load an image file as a 0..1 greyscale grid (for the land shape)
+static bool loadImportImage(const std::string& path, std::vector<float>& out, int& w, int& h) {
+    if (!FileExists(path.c_str())) return false;
+    Image img = LoadImage(path.c_str());
+    if (!img.data) return false;
+    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    if (img.width > 2048) ImageResize(&img, 2048, std::max(1, img.height * 2048 / img.width));
+    w = img.width; h = img.height;
+    out.resize((size_t)w * h);
+    const unsigned char* p = (const unsigned char*)img.data;
+    for (int i = 0; i < w * h; i++) out[i] = (0.299f * p[i * 4] + 0.587f * p[i * 4 + 1] + 0.114f * p[i * 4 + 2]) / 255.f;
+    UnloadImage(img);
+    return true;
+}
+
 struct App {
     PlanetSettings ui;
     Planet planet;
@@ -163,6 +178,11 @@ struct App {
 
     void regenerate() {
         map->waitIdle();   // background threads must stop reading the old world first
+        if (!ui.importPath.empty()) {
+            std::vector<float> v; int w = 0, h = 0;
+            if (loadImportImage(ui.importPath, v, w, h)) planet.setImport(v, w, h);
+            else planet.clearImport();
+        } else planet.clearImport();
         planet.generate(ui);
         world.generateTectonics(planet, ui.seed, ui.plateCount, ui.tectonicActivity);
         planet.setUplift(&world.uplift);
@@ -249,6 +269,8 @@ int main() {
     float tempOffUi = app.ui.tempOffset, rainMulUi = app.ui.rainMultiplier, seaUi = app.ui.seaLevel;
     int templateUi = 0;
     float erosionUi = app.ui.erosion;
+    std::string droppedPath;
+    Texture2D traceTex{}; bool haveTrace = false, showTrace = true; float traceAlpha = 0.5f;
     char nameBuf[64] = "my world";
     bool nameEdit = false, autosave = true;
     int savedScroll = 0, savedActive = -1;
@@ -305,6 +327,18 @@ int main() {
         if (cityEd.active) {   // the city editor takes over the whole screen
             cityEd.frame(app.planet, app.world, app.doc);
             continue;
+        }
+        if (IsFileDropped()) {
+            FilePathList files = LoadDroppedFiles();
+            if (files.count > 0) {
+                std::string pth = files.paths[0];
+                if (IsFileExtension(pth.c_str(), ".png;.jpg;.jpeg;.bmp;.tga")) droppedPath = pth;
+                else if (IsFileExtension(pth.c_str(), ".world")) {
+                    SaveData d; std::string err;
+                    if (loadWorld(pth, d, err)) { app.applySave(d); syncSliders(); setStatus("Loaded " + pth); } else setStatus(err);
+                }
+            }
+            UnloadDroppedFiles(files);
         }
         const float dt = GetFrameTime();
         const int sw = GetScreenWidth(), sh = GetScreenHeight();
@@ -530,6 +564,16 @@ int main() {
         BeginDrawing();
         ClearBackground(th.bg);
         map.draw(view, sw, sh);
+        if (haveTrace && showTrace) {
+            for (int k = -1; k <= 1; k++) {
+                float x0 = (float)(sw / 2.0 + (-180 + 360 * k - view.centerLon) * view.pxPerDeg);
+                float y0 = (float)(sh / 2.0 - (90 - view.centerLat) * view.pxPerDeg);
+                float wpx = (float)(360 * view.pxPerDeg), hpx = (float)(180 * view.pxPerDeg);
+                if (x0 > sw || x0 + wpx < 0) continue;
+                DrawTexturePro(traceTex, Rectangle{0, 0, (float)traceTex.width, (float)traceTex.height}, Rectangle{x0, y0, wpx, hpx}, Vector2{0, 0}, 0,
+                               Fade(WHITE, traceAlpha));
+            }
+        }
         if (showRivers) {
             double kmPerPxR = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
             double thr = std::max(40.0, 2500.0 * std::pow(5.0 / view.pxPerDeg, 1.3));
@@ -844,6 +888,10 @@ int main() {
                     setStatus("Template set: press Generate planet");
                 }
             }
+            if (!app.ui.importPath.empty()) {
+                L.note(("Land shape from: " + std::string(GetFileName(app.ui.importPath.c_str()))).c_str());
+                if (L.button("Stop using the image", 28)) { app.ui.importPath.clear(); setStatus("Press Generate planet to go back to random land"); }
+            } else L.note("Tip: drag a PNG or JPG onto the window to use it as the land shape or as a tracing layer.");
             L.heading("TECTONICS");
             L.label(TextFormat("Plates: %d", (int)platesUi)); L.slider(&platesUi, 4, 30);
             L.label(TextFormat("Tectonic activity: %.1f", activityUi)); L.slider(&activityUi, 0, 2);
@@ -882,6 +930,11 @@ int main() {
                 double hexKm = std::pow(10.0, 0.5 + hexKmT * 2.5);
                 GuiCheckBox(Rectangle{L.x, L.y, 20, 20}, TextFormat("Hex grid (%s)", formatKm(hexKm)), &showHex);
                 GuiSliderBar(Rectangle{L.x + L.w / 2 + 10, L.y + 2, L.w / 2 - 10, 16}, NULL, NULL, &hexKmT, 0, 1);
+                L.y += 26;
+            }
+            if (haveTrace) {
+                GuiCheckBox(Rectangle{L.x, L.y, 20, 20}, "Tracing image", &showTrace);
+                GuiSliderBar(Rectangle{L.x + L.w / 2 + 10, L.y + 2, L.w / 2 - 10, 16}, NULL, NULL, &traceAlpha, 0.05f, 1);
                 L.y += 26;
             }
             L.heading("OVERLAY");
@@ -1664,6 +1717,39 @@ int main() {
             for (int i = 0; i < 4; i++) DrawText(t[i].c_str(), bx + 10, by + 6 + i * 22, 18, i == 0 ? YELLOW : RAYWHITE);
         }
         drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
+        if (!droppedPath.empty()) {
+            Rectangle box{(float)sw / 2 - 300, (float)sh / 2 - 110, 600, 220};
+            DrawRectangle(0, 0, sw, sh, Fade(BLACK, 0.45f));
+            DrawRectangleRec(box, Color{248, 248, 244, 255});
+            DrawRectangleLinesEx(box, 2, DARKGRAY);
+            DrawText("Use this image as...", (int)box.x + 20, (int)box.y + 16, 24, Color{40, 40, 40, 255});
+            DrawText(GetFileName(droppedPath.c_str()), (int)box.x + 20, (int)box.y + 50, 18, DARKGRAY);
+            DrawText("Images should be a whole-world map (twice as wide as tall). Dark = sea, bright = high land.", (int)box.x + 20, (int)box.y + 78, 15, GRAY);
+            if (GuiButton(Rectangle{box.x + 20, box.y + 120, 270, 40}, "The land shape (regenerate)")) {
+                app.ui.importPath = droppedPath;
+                {   // match the ocean cover to the dark part of the image, so the coast follows the drawing
+                    std::vector<float> v; int w = 0, h = 0;
+                    if (loadImportImage(droppedPath, v, w, h)) {
+                        double dark = 0, all = 0;
+                        for (int y = 0; y < h; y++) {
+                            double wt = std::cos((90 - (y + 0.5) * 180.0 / h) * kPi / 180);
+                            for (int x = 0; x < w; x++) { all += wt; if (v[(size_t)y * w + x] < 0.4f) dark += wt; }
+                        }
+                        if (all > 0) oceanUi = (float)clampd(100 * dark / all, 5, 95);
+                    }
+                }
+                app.ui.radiusKm = std::round(radiusUi); app.ui.oceanPercent = oceanUi; app.ui.mountains = mountUi;
+                app.regenerate();
+                setStatus("World rebuilt from the image. Adjust Ocean cover and regenerate to move the coasts.");
+                droppedPath.clear();
+            } else if (GuiButton(Rectangle{box.x + 310, box.y + 120, 270, 40}, "A tracing layer on top")) {
+                if (haveTrace) UnloadTexture(traceTex);
+                traceTex = LoadTexture(droppedPath.c_str());
+                haveTrace = traceTex.id != 0; showTrace = true;
+                setStatus(haveTrace ? "Tracing layer added (Map tab to adjust)" : "Couldn't load that image");
+                droppedPath.clear();
+            } else if (GuiButton(Rectangle{box.x + 20, box.y + 170, 560, 32}, "Cancel")) droppedPath.clear();
+        }
         if (showStats) {
             Rectangle box{(float)sw / 2 - 470, 60, 940, (float)std::min(820, sh - 120)};
             DrawRectangle(0, 0, sw, sh, Fade(BLACK, 0.45f));
@@ -1928,6 +2014,7 @@ int main() {
     }
 
     cityEd.close();
+    if (haveTrace) UnloadTexture(traceTex);
     map.shutdown();
     CloseWindow();
     return 0;
