@@ -151,7 +151,7 @@ struct App {
         }
     }
     bool labelsDirty = true;
-    struct Label { double lat, lon, areaKm2; };
+    struct Label { double lat, lon, areaKm2, angle = 0, stretch = 1; };
     std::vector<Label> nationLabels;
     void updateLabels() {
         if (!labelsDirty) return;
@@ -170,6 +170,24 @@ struct App {
             Vec3d d = sum[n].normalized();
             nationLabels[n].lat = std::asin(clampd(d.y, -1, 1)) * 180 / kPi;
             nationLabels[n].lon = std::atan2(d.x, d.z) * 180 / kPi;
+        }
+        // the long axis of each territory, so names can run along it like on a printed map
+        std::vector<double> sxx(sum.size(), 0), syy(sum.size(), 0), sxy(sum.size(), 0), sw(sum.size(), 0);
+        for (int i = 0; i < (int)doc.owner.size(); i++) {
+            int n = doc.nationAt(i);
+            if (n < 0 || n >= (int)sum.size()) continue;
+            double lat = World::cellLat(i / World::W), lon = World::cellLon(i % World::W);
+            double dx = std::remainder(lon - nationLabels[n].lon, 360.0) * std::cos(nationLabels[n].lat * kPi / 180), dy = lat - nationLabels[n].lat;
+            double w = std::cos(lat * kPi / 180);
+            sxx[n] += dx * dx * w; syy[n] += dy * dy * w; sxy[n] += dx * dy * w; sw[n] += w;
+        }
+        for (size_t n = 0; n < sum.size(); n++) {
+            if (sw[n] <= 0) continue;
+            double a = sxx[n] / sw[n], b = syy[n] / sw[n], c = sxy[n] / sw[n];
+            double ang = 0.5 * std::atan2(2 * c, a - b);           // principal axis (radians, east = 0, north positive)
+            double l1 = (a + b) / 2 + std::sqrt(std::pow((a - b) / 2, 2.0) + c * c), l2 = (a + b) / 2 - std::sqrt(std::pow((a - b) / 2, 2.0) + c * c);
+            nationLabels[n].angle = clampd(ang * 180 / kPi, -40, 40);
+            nationLabels[n].stretch = l2 > 1e-9 ? std::sqrt(l1 / l2) : 3;
         }
     }
     TileMap* map = nullptr;
@@ -303,7 +321,9 @@ int main() {
     int lastNationSel = -2, lastCitySel = -2;
     bool showRoutes = true, showEvents = true, showPins = true, typing = false;
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
-    bool showStats = false, showHelp = false, showHex = false;
+    bool showStats = false, showHelp = false, showHex = false, globeMini = false, rotateLabels = true;
+    Texture2D globeTex{}; bool haveGlobe = false; double globeLat = 999, globeLon = 999, globeTime = -10;
+    std::vector<unsigned char> globePx(200 * 200 * 4, 0);
     float hexKmT = 0.5f;   // log slider for hex size
     char findBuf[64] = "";
     int measureTool = 0;
@@ -644,12 +664,14 @@ int main() {
                 std::string up = app.doc.nations[n].name;
                 for (char& ch : up) ch = (char)std::toupper((unsigned char)ch);
                 float spacing = size * 0.35f;
+                if (lb.stretch > 1.4) spacing = size * (float)clampd(0.35 + (lb.stretch - 1.4) * 0.25, 0.35, 0.9);   // spread out along long countries
                 Vector2 ts = MeasureTextEx(GetFontDefault(), up.c_str(), size, spacing);
-                Vector2 at{p.x - ts.x / 2, p.y - ts.y / 2};
-                if (at.x + ts.x < panel.x + panel.width || at.x > sw) continue;
+                if (p.x + ts.x / 2 < panel.x + panel.width || p.x - ts.x / 2 > sw) continue;
                 bool fantasy = map.style() == MapStyle::Fantasy;
-                if (!fantasy) DrawTextEx(GetFontDefault(), up.c_str(), {at.x + 1.5f, at.y + 1.5f}, size, spacing, Fade(BLACK, 0.6f));
-                DrawTextEx(GetFontDefault(), up.c_str(), at, size, spacing, fantasy ? Color{80, 50, 30, 220} : Fade(RAYWHITE, 0.92f));
+                float rot = rotateLabels && lb.stretch > 1.25 ? (float)-lb.angle : 0.f;   // screen y points down
+                Vector2 origin{ts.x / 2, ts.y / 2};
+                if (!fantasy) DrawTextPro(GetFontDefault(), up.c_str(), {p.x + 1.5f, p.y + 1.5f}, origin, rot, size, spacing, Fade(BLACK, 0.6f));
+                DrawTextPro(GetFontDefault(), up.c_str(), p, origin, rot, size, spacing, fantasy ? Color{80, 50, 30, 220} : Fade(RAYWHITE, 0.92f));
             }
         }
         // ---- Trade routes ----
@@ -936,6 +958,7 @@ int main() {
             check2("Cities", &showCities, "Labels", &showLabels);
             check2("Volcanoes", &showVolcanoes, "Events", &showEvents);
             check2("Lore pins", &showPins, "Minimap", &showMini);
+            if (showMini) check2("Globe minimap", &globeMini, "Rotate labels", &rotateLabels);
             check2("Compass", &showCompass, "Map title", &showTitle);
             {
                 double hexKm = std::pow(10.0, 0.5 + hexKmT * 2.5);
@@ -1713,7 +1736,38 @@ int main() {
             DrawRectangleLinesEx({box.x + 5, box.y + 5, box.width - 10, box.height - 10}, 1, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
             DrawTextEx(GetFontDefault(), t.c_str(), {cx - ts.x / 2, 24}, fsz, spacing, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
         }
-        if (showMini) {
+        if (showMini && globeMini) {
+            // orthographic globe centred on the view, redrawn on the CPU when the view moves
+            if (std::fabs(globeLat - view.centerLat) > 0.3 || std::fabs(std::remainder(globeLon - view.centerLon, 360.0)) > 0.3 || GetTime() - globeTime > 2) {
+                globeLat = view.centerLat; globeLon = view.centerLon; globeTime = GetTime();
+                const int GS = 200;
+                double phi0 = globeLat * kPi / 180, lam0 = globeLon * kPi / 180;
+                for (int y = 0; y < GS; y++)
+                    for (int x = 0; x < GS; x++) {
+                        unsigned char* o = &globePx[(y * GS + x) * 4];
+                        double X = (x + 0.5) / GS * 2 - 1, Y = 1 - (y + 0.5) / GS * 2, rho = std::sqrt(X * X + Y * Y);
+                        if (rho > 1) { o[3] = 0; continue; }
+                        double c = std::asin(std::min(1.0, rho));
+                        double lat = rho < 1e-9 ? phi0 : std::asin(std::cos(c) * std::sin(phi0) + Y * std::sin(c) * std::cos(phi0) / rho);
+                        double lon = lam0 + std::atan2(X * std::sin(c), rho * std::cos(phi0) * std::cos(c) - Y * std::sin(phi0) * std::sin(c));
+                        unsigned char rgb[3] = {20, 40, 80};
+                        map.worldColor(lat * 180 / kPi, wrapLon(lon * 180 / kPi), rgb);
+                        double shade = 0.45 + 0.55 * std::cos(c);
+                        o[0] = (unsigned char)(rgb[0] * shade); o[1] = (unsigned char)(rgb[1] * shade); o[2] = (unsigned char)(rgb[2] * shade); o[3] = 255;
+                    }
+                if (!haveGlobe) {
+                    Image gi{globePx.data(), GS, GS, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+                    globeTex = LoadTextureFromImage(gi); haveGlobe = true;
+                    SetTextureFilter(globeTex, TEXTURE_FILTER_BILINEAR);
+                } else UpdateTexture(globeTex, globePx.data());
+            }
+            float gs = miniRect.height + 40;
+            Rectangle gr{miniRect.x + miniRect.width - gs, miniRect.y, gs, gs};
+            DrawCircle((int)(gr.x + gs / 2), (int)(gr.y + gs / 2), gs / 2 + 4, Fade(Color{120, 170, 255, 255}, 0.35f));
+            DrawTexturePro(globeTex, Rectangle{0, 0, 200, 200}, gr, Vector2{0, 0}, 0, WHITE);
+            float vr = (float)std::min(gs / 2.0, (sh / view.pxPerDeg) / 180.0 * gs / 2);
+            DrawCircleLines((int)(gr.x + gs / 2), (int)(gr.y + gs / 2), std::max(3.f, vr), YELLOW);
+        } else if (showMini) {
             DrawRectangle((int)miniRect.x - 3, (int)miniRect.y - 3, (int)miniRect.width + 6, (int)miniRect.height + 6, Fade(BLACK, 0.7f));
             map.drawMini(miniRect);
             float vw = (float)(sw / view.pxPerDeg / 360 * miniRect.width), vh = (float)(sh / view.pxPerDeg / 180 * miniRect.height);
@@ -2103,6 +2157,7 @@ int main() {
 
     cityEd.close();
     if (haveTrace) UnloadTexture(traceTex);
+    if (haveGlobe) UnloadTexture(globeTex);
     map.shutdown();
     CloseWindow();
     return 0;

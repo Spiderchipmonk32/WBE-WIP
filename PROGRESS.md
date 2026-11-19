@@ -4,6 +4,9 @@ Overnight build log. Newest entries at the top of each section. Each feature is 
 and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest run → Artifacts).
 
 ## Done
+- **Glacial fjords**: on cold coasts, big glacier-fed valleys are carved below sea level so the sea floods them.
+- **Globe minimap**: tick "Globe minimap" in the Map tab to see a shaded globe centred on where you're looking, with your view circled.
+- **Rotated nation labels**: long, thin nations get their names tilted and spaced out along their shape (can be turned off in the Map tab).
 
 ### Fantasy resource editor (Resources tab → Fantasy)
 - Invent your own resources (mithril, mana crystals, dragonglass...): name, colour, description, and the

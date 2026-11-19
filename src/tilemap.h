@@ -53,6 +53,8 @@ public:
     void update(const MapView& v, int sw, int sh);        // collect finished tiles, request new ones
     void draw(const MapView& v, int sw, int sh);
     void drawMini(Rectangle r);   // whole world, small (uses the coarsest tiles)
+    // Colour of the whole-world map at a point (from the coarsest tiles), for the globe view
+    bool worldColor(double lat, double lon, unsigned char rgb[3]) const;
 
     // Render the whole world at a zoom level into one RGBA image (for exporting). Blocks.
     void renderWorld(int level, std::vector<unsigned char>& rgba, int& w, int& h) const;
@@ -89,6 +91,7 @@ private:
     Overlay overlay_ = Overlay::None;
     int overlayParam_ = 0;
     std::unordered_map<uint64_t, Entry> cache_;
+    std::vector<unsigned char> level0_[8];   // CPU copies of the 8 whole-world tiles
     std::unordered_set<uint64_t> inFlight_;
     uint64_t stamp_ = 1, frame_ = 0;
     Simplex3 paper_{777};

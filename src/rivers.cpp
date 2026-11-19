@@ -180,6 +180,7 @@ void World::generateErosion(double strength) {
     erosion.assign(N, 0);
     if (strength <= 0 || discharge.empty()) return;
     std::vector<float> e(N, 0);
+    std::vector<uint8_t> fjordMask(N, 0);
     for (int i = 0; i < N; i++) {
         if (elev[i] <= 0) continue;
         // rivers cut valleys: deeper for bigger rivers, more where the land is high above the sea
@@ -188,7 +189,12 @@ void World::generateErosion(double strength) {
         // time wears mountains down: old rock is lower and smoother
         double age = rockAge.empty() ? 100 : rockAge[i];
         double wear = std::max(0.0f, elev[i] - 400.0f) * 0.32 * smoothstepd(150, 1500, age);
-        e[i] = (float)(-(cut + wear) * strength);
+        // glaciers on cold coasts dig deep troughs that the sea later floods: fjords
+        double fjord = 0;
+        if (!tempYear.empty() && !distOceanKm.empty() && tempYear[i] < 2 && distOceanKm[i] < 350 && q > 30)
+            fjord = std::min(900.0, 120.0 * std::log10(1 + q / 20.0)) * smoothstepd(2, -4, tempYear[i]) * (1 - distOceanKm[i] / 350.0);
+        fjordMask[i] = fjord > 50 ? 1 : 0;
+        e[i] = (float)(-(cut + wear + fjord) * strength);
     }
     // valleys are wider than one cell: spread a little
     for (int pass = 0; pass < 2; pass++) {
@@ -203,6 +209,9 @@ void World::generateErosion(double strength) {
         e.swap(e2);
     }
     // never carve land below sea level (that would turn valleys into fjords everywhere)
-    for (int i = 0; i < N; i++) if (elev[i] > 0) e[i] = std::max(e[i], -(elev[i] - 15.0f)); else e[i] = 0;
+    for (int i = 0; i < N; i++) {
+        if (elev[i] <= 0) e[i] = 0;
+        else if (!fjordMask[i]) e[i] = std::max(e[i], -(elev[i] - 15.0f));
+    }
     erosion.swap(e);
 }

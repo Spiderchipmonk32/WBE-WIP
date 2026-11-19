@@ -519,6 +519,7 @@ void TileMap::update(const MapView& v, int sw, int sh) {
         SetTextureWrap(e.tex, TEXTURE_WRAP_CLAMP);
         e.hasTex = true;
         e.built = r.stamp;
+        if (r.level == 0) level0_[r.ty * 4 + r.tx] = r.rgba;
     }
 
     // 2. Work out which tiles are needed, nearest the screen centre first
@@ -656,4 +657,17 @@ void TileMap::drawMini(Rectangle r) {
             Rectangle dst{r.x + tx * r.width / 4, r.y + ty * r.height / 2, r.width / 4 + 1, r.height / 2 + 1};
             drawTile(0, tx, ty, dst);
         }
+}
+
+bool TileMap::worldColor(double lat, double lon, unsigned char rgb[3]) const {
+    double T = 90.0;
+    int tx = (int)std::floor((lon + 180) / T), ty = (int)std::floor((90 - lat) / T);
+    tx = ((tx % 4) + 4) % 4; ty = std::max(0, std::min(1, ty));
+    const auto& t = level0_[ty * 4 + tx];
+    if (t.empty()) return false;
+    int px = std::min(TILE - 1, std::max(0, (int)(((lon + 180) - tx * T) / T * TILE)));
+    int py = std::min(TILE - 1, std::max(0, (int)(((90 - lat) - ty * T) / T * TILE)));
+    const unsigned char* p = &t[(py * TILE + px) * 4];
+    rgb[0] = p[0]; rgb[1] = p[1]; rgb[2] = p[2];
+    return true;
 }
