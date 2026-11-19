@@ -5,6 +5,28 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Climate, wind, ocean currents and biomes
+- **Seasons** from the axial tilt (slider in the new **Climate** tab; try 0 for no seasons or 45+ for extreme ones).
+  Land swings with the seasons more than sea, big continental interiors get cold winters, and air cools
+  6.5 C per km of height.
+- **Ocean currents**: warm currents on the east coasts of continents and cold ones on west coasts in the
+  subtropics; a warm drift keeps mid-latitude west coasts mild (like western Europe).
+- **Winds**: trade winds, westerlies and polar easterlies that shift north and south with the sun, plus
+  monsoon winds that blow onto continents in summer.
+- **Rainfall**: heavy along the equator and the storm tracks, dry under the subtropical highs; wind is
+  traced back to the sea so interiors dry out, mountains wring out rain on their windward side and
+  leave **rain shadows** behind.
+- **15 biomes** (tropical rainforest, savanna, hot/cold desert, Mediterranean, grassland, temperate and
+  boreal forest, tundra, ice sheets, sea ice, wetlands...). The Realistic map style now takes its colours
+  from the climate instead of random noise.
+- Overlays: Temperature and Rainfall (any month or the whole year), Biomes, Wind (animated-style arrows
+  per month) and Ocean currents (warm/cold), with legends. Hover shows biome, temperatures and rainfall.
+- After sculpting, **Update climate for new terrain** (Sculpt tab) re-runs it, so a new mountain range
+  makes a new rain shadow.
+
+**Decisions:** a simplified model rather than a full atmosphere simulation, so it runs in under a second.
+Climate-dependent resources (bauxite, peat, salt, lithium) now use the real climate.
+
 ### Resources placed by geology
 - 52 real resources in five groups: metals (iron, copper, gold, silver, lead, zinc, tin, tungsten, nickel,
   cobalt, chromium, platinum, bauxite, manganese, titanium, uranium, lithium, rare earths, molybdenum,

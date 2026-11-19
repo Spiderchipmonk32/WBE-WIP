@@ -100,6 +100,45 @@ bool TileMap::overlayColor(Overlay o, int param, double lat, double lon, double 
             if (st < 0.05) return false;
             return set(255, 220 - 200 * st, 40, clampd(st * 1.1, 0, 0.8));
         }
+        case Overlay::Temperature: {
+            if (world_->tempYear.empty()) return false;
+            double t = param >= 0 && param < 12 ? World::sample(world_->tempMonth[param], lat, lon) : World::sample(world_->tempYear, lat, lon);
+            if (h > 0) t -= 6.5 * (h - World::sample(world_->elev, lat, lon)) / 1000.0;   // finer height detail
+            static const double st[][4] = {{-40, 120, 40, 160}, {-20, 40, 70, 220}, {0, 90, 200, 230}, {10, 80, 190, 90},
+                                           {20, 240, 220, 60}, {30, 240, 120, 40}, {40, 180, 20, 30}};
+            int k = 0; while (k < 6 && t > st[k + 1][0]) k++;
+            double f = k >= 6 ? 1 : clampd((t - st[k][0]) / (st[k + 1][0] - st[k][0]), 0, 1);
+            const double* a = st[k]; const double* b = st[std::min(6, k + 1)];
+            return set(a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f, 0.6);
+        }
+        case Overlay::Rainfall: {
+            if (world_->rainfallYear.empty()) return false;
+            double r = param >= 0 && param < 12 ? World::sample(world_->rainMonth[param], lat, lon) * 12 : World::sample(world_->rainfallYear, lat, lon);
+            double k = clampd(std::log10(std::max(30.0, r) / 30.0) / std::log10(4000.0 / 30.0), 0, 1);   // 30..4000 mm/yr
+            static const double st[][3] = {{170, 110, 50}, {230, 200, 90}, {120, 190, 80}, {40, 150, 160}, {30, 60, 190}};
+            int a = std::min(3, (int)(k * 4)); double f = k * 4 - a;
+            return set(st[a][0] + (st[a + 1][0] - st[a][0]) * f, st[a][1] + (st[a + 1][1] - st[a][1]) * f, st[a][2] + (st[a + 1][2] - st[a][2]) * f, h > 0 ? 0.65 : 0.35);
+        }
+        case Overlay::Biomes: {
+            if (world_->biome.empty()) return false;
+            Biome b = (Biome)world_->biome[c];
+            if (b == Biome::Ocean) return false;
+            unsigned char rgb3[3]; biomeColor(b, rgb3);
+            return set(rgb3[0], rgb3[1], rgb3[2], 0.7);
+        }
+        case Overlay::Wind: {
+            if (world_->windU[0].empty()) return false;
+            int m = param >= 0 && param < 12 ? param : 0;
+            double u = World::sample(world_->windU[m], lat, lon), v = World::sample(world_->windV[m], lat, lon);
+            double sp = std::sqrt(u * u + v * v);
+            return set(255, 255, 255, clampd(sp / 14.0, 0, 0.45));
+        }
+        case Overlay::Currents: {
+            if (world_->seaTempAnomaly.empty() || h > 0) return false;
+            double an = World::sample(world_->seaTempAnomaly, lat, lon);
+            if (std::fabs(an) < 0.4) return false;
+            return an > 0 ? set(230, 70, 50, clampd(an / 6, 0, 0.6)) : set(60, 140, 255, clampd(-an / 6, 0, 0.6));
+        }
         case Overlay::Resource: {
             if (world_->selectedFavor.empty() || world_->selectedRes < 0) return false;
             double f = World::sample(world_->selectedFavor, lat, lon);

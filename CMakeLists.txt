@@ -36,6 +36,7 @@ add_executable(Worldbuilder
   src/tilemap.cpp
   src/tectonics.cpp
   src/resources.cpp
+  src/climate.cpp
   src/raygui_impl.c)
 target_include_directories(Worldbuilder PRIVATE src ${raygui_SOURCE_DIR}/src)
 find_package(Threads REQUIRED)

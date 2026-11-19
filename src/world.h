@@ -40,6 +40,11 @@ struct ResourceDef {
 struct Deposit { int res; double lat, lon; double tonnes, grade, depthM; bool offshore; };
 
 const std::vector<ResourceDef>& resourceDefs();
+
+enum class Biome : uint8_t { Ocean, SeaIce, IceSheet, Tundra, BorealForest, TemperateForest, TemperateRainforest,
+    Grassland, Mediterranean, ColdDesert, HotDesert, Savanna, TropicalSeasonalForest, TropicalRainforest, Wetland, Count };
+const char* biomeName(Biome b);
+void biomeColor(Biome b, unsigned char rgb[3]);
 const char* resGroupName(ResGroup g);
 
 class World {
@@ -86,8 +91,18 @@ public:
     double totalTonnes(int res) const;
 
     // ---- climate (climate.cpp); empty until generated ----
+    void generateClimate(double axialTiltDeg);
     std::vector<float> rainfallYear;   // mm per year
     std::vector<float> tempYear;       // mean degC
+    std::vector<float> tempSeaLevel;   // annual mean reduced to sea level (for fine-detail colouring)
+    std::vector<float> tempMonth[12];  // degC
+    std::vector<float> rainMonth[12];  // mm per month
+    std::vector<float> windU[12], windV[12];   // east and north wind components, m/s
+    std::vector<float> currentU, currentV;     // ocean surface currents (annual), m/s
+    std::vector<float> seaTempAnomaly;         // warm (+) and cold (-) currents, degC
+    std::vector<uint8_t> biome;                // Biome per cell
+    std::vector<float> distOceanKm;            // land: distance to the sea
+    double tiltDeg = 23.4;
 
     double radiusKm = 6371;
     std::vector<Vec3d> cellDir;         // unit direction per cell

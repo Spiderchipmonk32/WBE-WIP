@@ -99,13 +99,26 @@ struct App {
         world.generateTectonics(planet, ui.seed, ui.plateCount, ui.tectonicActivity);
         planet.setUplift(&world.uplift);
         world.sampleElevation(planet);
+        world.generateClimate(ui.axialTilt);
+        planet.setClimate(&world.tempSeaLevel, &world.rainfallYear);
         world.generateResources(ui.seed);
         world.selectedFavor.clear();
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
         map->reset();
         stats = planet.computeStats();
     }
+    // After sculpting or changing the tilt: re-run the climate on the new terrain
+    void recalcClimate() {
+        map->waitIdle();
+        world.sampleElevation(planet);
+        world.generateClimate(ui.axialTilt);
+        if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
+        map->invalidateAll();
+    }
 };
+
+static const char* kMonths[13] = {"January", "February", "March", "April", "May", "June", "July", "August",
+                                  "September", "October", "November", "December", "Whole year"};
 
 int main() {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
@@ -127,6 +140,8 @@ int main() {
     int styleUi = 0;
     int overlayUi = 0, overlayScroll = 0;
     int resGroupUi = 0, resListScroll = 0, resListActive = -1;
+    float monthUi = 12, tiltUi = app.ui.axialTilt;
+    int climateViewUi = -1;
     float brushT = 0.80f, strengthT = 0.851f;
     float radiusUi = app.ui.radiusKm, oceanUi = app.ui.oceanPercent, mountUi = app.ui.mountains, contUi = app.ui.continentSize;
     float platesUi = (float)app.ui.plateCount, activityUi = app.ui.tectonicActivity;
@@ -236,6 +251,28 @@ int main() {
                     drawArrow({sx, sy}, {sx + ve * k, sy - vn * k}, Fade(BLACK, 0.7f), 2.f);
                 }
         }
+        if (ov == Overlay::Wind || ov == Overlay::Currents) {
+            const float stepPx = 56;
+            int m = ov == Overlay::Wind ? std::min(11, (int)std::round(monthUi) % 12) : 0;
+            for (float sy = stepPx / 2; sy < sh; sy += stepPx)
+                for (float sx = panel.x + panel.width + stepPx / 2; sx < sw; sx += stepPx) {
+                    double lat = view.centerLat - (sy - sh / 2.0) / view.pxPerDeg;
+                    if (std::fabs(lat) > 88) continue;
+                    double lon = wrapLon(view.centerLon + (sx - sw / 2.0) / view.pxPerDeg);
+                    float u, v, k;
+                    if (ov == Overlay::Wind) {
+                        u = (float)World::sample(app.world.windU[m], lat, lon); v = (float)World::sample(app.world.windV[m], lat, lon); k = 3.2f;
+                    } else {
+                        if (app.world.elev[World::nearestCell(lat, lon)] > 0) continue;
+                        u = (float)World::sample(app.world.currentU, lat, lon); v = (float)World::sample(app.world.currentV, lat, lon); k = 30.f;
+                    }
+                    float len = std::sqrt(u * u + v * v) * k;
+                    if (len < 3) continue;
+                    if (len > stepPx * 0.9f) { u *= stepPx * 0.9f / len; v *= stepPx * 0.9f / len; }
+                    Vector2 a{sx - u * k / 2, sy + v * k / 2}, b{sx + u * k / 2, sy - v * k / 2};
+                    drawArrow(a, b, ov == Overlay::Wind ? Fade(BLACK, 0.65f) : Fade(Color{10, 40, 90, 255}, 0.85f), 2.f);
+                }
+        }
         if (showVolcanoes && (ov == Overlay::Plates || ov == Overlay::Rock || ov == Overlay::Earthquakes || view.pxPerDeg > 12)) {
             for (const Volcano& v : app.world.volcanoes) {
                 Vector2 p = toScreen(v.lat, v.lon);
@@ -272,8 +309,9 @@ int main() {
         // ---- Panel ----
         GuiPanel(panel, NULL);
         Layout L{panel.x + 14, panel.y + 12, panel.width - 28};
-        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 12) / 4, 28}, "World;Map;Sculpt;Resources", &tab);
-        L.y += 40;
+        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 12) / 4, 28}, "World;Map;Sculpt;Resources\nClimate", &tab);
+        L.y += 72;
+        const int month = (int)std::round(monthUi);
 
         if (tab == 0) {
             L.heading("PLANET");
@@ -307,8 +345,8 @@ int main() {
             L.check("Latitude/longitude grid", &showGrid);
             L.check("Volcano markers", &showVolcanoes);
             L.heading("OVERLAY");
-            GuiListView(Rectangle{L.x, L.y, L.w, 150}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab)", &overlayScroll, &overlayUi);
-            L.y += 160;
+            GuiListView(Rectangle{L.x, L.y, L.w, 200}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab);Temperature;Rainfall;Biomes;Wind;Ocean currents", &overlayScroll, &overlayUi);
+            L.y += 210;
             // legend
             if (overlayUi == 1) {
                 L.legend(Color{200, 30, 30, 255}, "Converging (mountains, trenches)");
@@ -354,6 +392,33 @@ int main() {
             } else {
                 L.note("Pick a resource to see where it forms and where the deposits are.");
             }
+        } else if (tab == 4) {
+            L.heading("CLIMATE");
+            L.label(TextFormat("Axial tilt: %.1f degrees", tiltUi)); L.slider(&tiltUi, 0, 60);
+            if (L.button("Recalculate climate", 30)) { app.ui.axialTilt = tiltUi; app.recalcClimate(); }
+            L.label(TextFormat("Month: %s", kMonths[month])); L.slider(&monthUi, 0, 12);
+            L.heading("SHOW");
+            int prevView = climateViewUi;
+            GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Temperature;Rainfall;Biomes\nWind;Currents", &climateViewUi);
+            L.y += 66;
+            if (climateViewUi != prevView && climateViewUi >= 0) overlayUi = 5 + climateViewUi;
+            if (overlayUi == 5) {
+                const Color c[7] = {{120, 40, 160, 255}, {40, 70, 220, 255}, {90, 200, 230, 255}, {80, 190, 90, 255}, {240, 220, 60, 255}, {240, 120, 40, 255}, {180, 20, 30, 255}};
+                const char* t[7] = {"-40 C", "-20 C", "0 C", "10 C", "20 C", "30 C", "40 C"};
+                for (int i = 0; i < 7; i++) L.legend(c[i], t[i]);
+            } else if (overlayUi == 6) {
+                const Color c[5] = {{170, 110, 50, 255}, {230, 200, 90, 255}, {120, 190, 80, 255}, {40, 150, 160, 255}, {30, 60, 190, 255}};
+                const char* t[5] = {"Under 100 mm/yr (desert)", "250 mm/yr (dry)", "700 mm/yr", "1,500 mm/yr (wet)", "3,000+ mm/yr (very wet)"};
+                for (int i = 0; i < 5; i++) L.legend(c[i], t[i]);
+            } else if (overlayUi == 7) {
+                for (int b = 1; b < (int)Biome::Count; b++) { unsigned char rgb[3]; biomeColor((Biome)b, rgb); L.legend(Color{rgb[0], rgb[1], rgb[2], 255}, biomeName((Biome)b)); }
+            } else if (overlayUi == 8) {
+                L.note("Arrows show the prevailing wind for the chosen month. Brighter areas are windier. Watch the monsoons flip between summer and winter.");
+            } else if (overlayUi == 9) {
+                L.legend(Color{230, 70, 50, 255}, "Warm current");
+                L.legend(Color{60, 140, 255, 255}, "Cold current");
+                L.note("Arrows show surface currents. Cold currents make coastal deserts; warm ones mild, wet coasts.");
+            }
         } else if (tab == 2) {
             L.heading("SCULPT");
             GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Pan;Raise;Lower\nSmooth;Flatten", &tool);
@@ -361,13 +426,19 @@ int main() {
             L.label(TextFormat("Brush radius: %s", formatKm(brushKm))); L.slider(&brushT, 0, 1);
             L.label(TextFormat("Strength: %.1f m/s", strength)); L.slider(&strengthT, 0, 1);
             if (L.button("Undo (Ctrl+Z)", 30)) doUndo();
+            if (L.button("Update climate for new terrain", 30)) app.recalcClimate();
             L.note("Left-drag on the map to sculpt. Keys 1-5 switch tools, [ and ] resize the brush.");
         }
         if ((MapStyle)styleUi != map.style()) map.setStyle((MapStyle)styleUi);
-        static const Overlay overlayList[] = {Overlay::None, Overlay::Plates, Overlay::Rock, Overlay::Earthquakes, Overlay::Resource};
+        static const Overlay overlayList[] = {Overlay::None, Overlay::Plates, Overlay::Rock, Overlay::Earthquakes, Overlay::Resource,
+                                              Overlay::Temperature, Overlay::Rainfall, Overlay::Biomes, Overlay::Wind, Overlay::Currents};
         const int overlayCount = (int)(sizeof(overlayList) / sizeof(overlayList[0]));
         if (overlayUi < 0) overlayUi = 0;
-        map.setOverlay(overlayList[std::min(overlayUi, overlayCount - 1)], app.world.selectedRes);
+        {
+            Overlay o = overlayList[std::min(overlayUi, overlayCount - 1)];
+            bool monthly = o == Overlay::Temperature || o == Overlay::Rainfall || o == Overlay::Wind;
+            map.setOverlay(o, monthly ? month : app.world.selectedRes);
+        }
 
         // ---- Readouts ----
         const int fs = 18;
@@ -381,17 +452,22 @@ int main() {
             int c = World::nearestCell(mLat, mLon);
             const Plate& pl = app.world.plates[app.world.plateId[c]];
             Vec3d v = app.world.plateVelocity(c);
-            std::string lines[5] = {
+            std::string clim = app.world.biome.empty() ? std::string("") :
+                std::string(TextFormat("%s: %.0f C avg (%.0f to %.0f), %.0f mm rain/yr", biomeName((Biome)app.world.biome[c]), app.world.tempYear[c],
+                    [&]{ float lo = 1e9f; for (int m = 0; m < 12; m++) lo = std::min(lo, app.world.tempMonth[m][c]); return lo; }(),
+                    [&]{ float hi = -1e9f; for (int m = 0; m < 12; m++) hi = std::max(hi, app.world.tempMonth[m][c]); return hi; }(),
+                    app.world.rainfallYear[c]));
+            std::string lines[6] = {
                 TextFormat("%.4f %c, %.4f %c", std::fabs(mLat), mLat >= 0 ? 'N' : 'S', std::fabs(mLon), mLon >= 0 ? 'E' : 'W'),
                 TextFormat("%s %.0f m", e > 0 ? "Elevation" : "Depth", std::fabs(e)),
                 TextFormat("Plate %d (%s), moving %.1f cm/yr", app.world.plateId[c] + 1, pl.continental ? "continental" : "oceanic", v.length() * 5),
                 TextFormat("Rock: %s, %.0f million yrs", World::rockName((Rock)app.world.rock[c]), app.world.rockAge[c]),
-                TextFormat("Nearest plate edge: %.0f km", app.world.distBoundaryKm[c])};
+                TextFormat("Nearest plate edge: %.0f km", app.world.distBoundaryKm[c]), clim};
             int tw = 0;
             for (auto& s : lines) tw = std::max(tw, MeasureText(s.c_str(), fs));
-            int bh = 5 * 22 + 14;
+            int bh = 6 * 22 + 14;
             DrawRectangle(sw - tw - 30, sh - bh - 10, tw + 20, bh, Fade(BLACK, 0.6f));
-            for (int i = 0; i < 5; i++) DrawText(lines[i].c_str(), sw - tw - 20, sh - bh - 3 + i * 22, fs, RAYWHITE);
+            for (int i = 0; i < 6; i++) DrawText(lines[i].c_str(), sw - tw - 20, sh - bh - 3 + i * 22, fs, RAYWHITE);
         }
         if (hoverDeposit >= 0) {
             const Deposit& dp = app.world.deposits[hoverDeposit];

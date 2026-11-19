@@ -18,7 +18,7 @@
 enum class MapStyle { Realistic = 0, Fantasy = 1, Elevation = 2 };
 
 // Data drawn on top of the map style
-enum class Overlay { None = 0, Plates, Rock, Earthquakes, Temperature, Rainfall, Biomes, Resource, Political, Population, Count };
+enum class Overlay { None = 0, Plates, Rock, Earthquakes, Temperature, Rainfall, Biomes, Resource, Political, Population, Wind, Currents, Count };
 
 struct MapView {
     double centerLon = 0, centerLat = 15;

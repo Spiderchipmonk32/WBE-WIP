@@ -16,6 +16,7 @@ struct PlanetSettings {
     float continentSize = 1.f;
     int   plateCount = 14;
     float tectonicActivity = 1.f;
+    float axialTilt = 23.4f;
 };
 
 enum class BrushType { Raise = 1, Lower = 2, Smooth = 3, Flatten = 4 };
@@ -60,6 +61,8 @@ public:
     PlanetStats computeStats() const;
     // Large-scale uplift from tectonics (metres on the World grid); nullptr = none
     void setUplift(const std::vector<float>* uplift) { uplift_ = uplift; }
+    // Climate fields on the World grid (sea-level temperature, annual rain) used for map colours
+    void setClimate(const std::vector<float>* tempSeaLevel, const std::vector<float>* rainYear) { climT_ = tempSeaLevel; climR_ = rainYear; }
     static void colorFor(double elevM, unsigned char rgb[3]);
     // Surface colour with rough ice caps and dry/wet variation (a stand-in until the
     // climate simulation exists). Alpha is 255 for land and 128 for water.
@@ -76,6 +79,8 @@ private:
     double sea_ = 0, hi_ = 1, lo_ = -1, contScale_ = 1.1;
     std::vector<Stroke> strokes_;
     const std::vector<float>* uplift_ = nullptr;
+    const std::vector<float>* climT_ = nullptr;
+    const std::vector<float>* climR_ = nullptr;
     int group_ = 0;
     double groupTarget_ = 0;
 };

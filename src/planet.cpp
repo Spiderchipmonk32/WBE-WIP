@@ -52,6 +52,7 @@ void Planet::generate(const PlanetSettings& s) {
     strokes_.clear();
     group_ = 0;
     uplift_ = nullptr;
+    climT_ = climR_ = nullptr;
 
     // Sea level is chosen so the requested share of the surface is ocean.
     std::vector<double> samples(kStatSamples);
@@ -229,6 +230,38 @@ PlanetStats Planet::computeStats() const {
 void Planet::surfaceColor(const Vec3d& d, double h, unsigned char out[4]) const {
     struct C { double r, g, b; };
     auto mix = [](C a, C b, double t) { t = clampd(t, 0, 1); return C{a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t}; };
+    if (climT_ && climR_ && !climT_->empty()) {
+        // Colours from the simulated climate
+        double lat = std::asin(clampd(d.y, -1, 1)) * 180 / kPi, lon = std::atan2(d.x, d.z) * 180 / kPi;
+        double wob = fbm(nMoist_, d.x * 7 + 5, d.y * 7, d.z * 7, 3);
+        double T = World::sample(*climT_, lat, lon) - 6.5 * std::max(0.0, h) / 1000.0 + wob * 2.5;
+        double P = World::sample(*climR_, lat, lon) * (1 + 0.25 * fbm(nMoist_, d.x * 4, d.y * 4, d.z * 4, 3));
+        C c;
+        if (h <= 0) {
+            unsigned char rgb[3];
+            colorFor(h, rgb);
+            c = {(double)rgb[0], (double)rgb[1], (double)rgb[2]};
+            double ice = smoothstepd(-0.8, -1.9, T);
+            c = mix(c, C{222, 234, 242}, ice);
+            out[3] = ice > 0.5 ? 255 : 128;
+        } else {
+            double pet = std::max(150.0, 250 + 35 * std::max(0.0, T));
+            double ai = P / pet;
+            C desert = T > 12 ? C{222, 194, 132} : C{180, 165, 124};
+            C grass = T > 18 ? C{172, 166, 82} : C{142, 160, 84};
+            C forest = T > 20 ? C{26, 88, 36} : (T > 4 ? C{52, 108, 48} : C{44, 80, 58});
+            c = mix(desert, grass, smoothstepd(0.1, 0.35, ai));
+            c = mix(c, forest, smoothstepd(0.45, 0.95, ai));
+            c = mix(c, C{138, 136, 106}, smoothstepd(1, -5, T));                        // tundra
+            c = mix(c, C{122, 102, 82}, smoothstepd(2200, 3800, h) * (1 - smoothstepd(0.8, 1.6, ai)));   // bare rock up high
+            c = mix(c, C{148, 146, 144}, smoothstepd(3800, 5200, h));
+            c = mix(c, C{206, 194, 146}, smoothstepd(12, 2, h) * (1 - smoothstepd(4, -4, T)));   // beaches
+            c = mix(c, C{240, 243, 247}, smoothstepd(-6, -11, T));                      // snow and ice
+            out[3] = 255;
+        }
+        out[0] = (unsigned char)c.r; out[1] = (unsigned char)c.g; out[2] = (unsigned char)c.b;
+        return;
+    }
     double absLat = std::asin(std::min(1.0, std::fabs(d.y))) * 180 / kPi;
     double m = fbm(nMoist_, d.x * 2.2, d.y * 2.2, d.z * 2.2, 4);   // large-scale variation, also wobbles the ice edge
     double wobble = fbm(nMoist_, d.x * 7 + 5, d.y * 7, d.z * 7, 3);
