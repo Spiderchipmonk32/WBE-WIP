@@ -44,9 +44,20 @@ struct Document {
     std::vector<Nation> nations;
     std::vector<City> cities;
     std::vector<uint16_t> owner;   // per World cell: 0 = unclaimed, otherwise nation index + 1
+    int era = 1;                   // Era for trade (see trade.h)
+    std::vector<std::pair<int, int>> customRoutes;   // city index pairs
 
     void ensureOwner(int cells) { if ((int)owner.size() != cells) owner.assign(cells, 0); }
     void removeNation(int n);      // keeps indices in cities and territory consistent
-    void removeCity(int c) { if (c >= 0 && c < (int)cities.size()) cities.erase(cities.begin() + c); }
+    void removeCity(int c) {
+        if (c < 0 || c >= (int)cities.size()) return;
+        cities.erase(cities.begin() + c);
+        std::vector<std::pair<int, int>> keep;
+        for (auto& r : customRoutes) {
+            if (r.first == c || r.second == c) continue;
+            keep.push_back({r.first > c ? r.first - 1 : r.first, r.second > c ? r.second - 1 : r.second});
+        }
+        customRoutes.swap(keep);
+    }
     int nationAt(int cell) const { return cell >= 0 && cell < (int)owner.size() ? (int)owner[cell] - 1 : -1; }
 };

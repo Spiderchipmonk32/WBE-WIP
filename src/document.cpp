@@ -30,6 +30,8 @@ void writeDocument(std::ostream& o, const Document& doc) {
     for (const City& c : doc.cities)
         o << "city " << quote(c.name) << " " << c.lat << " " << c.lon << " " << c.population << " " << c.nation << " " << c.culture << " "
           << (c.capital ? 1 : 0) << " " << c.founded << " " << quote(c.notes) << "\n";
+    o << "era " << doc.era << "\n";
+    for (auto& r : doc.customRoutes) o << "route " << r.first << " " << r.second << "\n";
     // territory, run-length encoded row by row
     if (!doc.owner.empty()) {
         const int W = 720, H = (int)doc.owner.size() / W;
@@ -86,6 +88,8 @@ bool readDocumentLine(const std::string& key, std::istringstream& in, const std:
         doc.cities.push_back(c);
         return true;
     }
+    if (key == "era") { in >> doc.era; return true; }
+    if (key == "route") { int a, b; if (in >> a >> b) doc.customRoutes.push_back({a, b}); return true; }
     if (key == "owner") {
         const int W = 720, H = 360;
         doc.ensureOwner(W * H);

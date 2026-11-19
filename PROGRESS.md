@@ -5,6 +5,23 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Trade and supply chains (Trade tab)
+- 25 goods: food (grain, fish, meat and wool), timber, salt, stone, clay, sand, ores (iron, copper,
+  tin, base metals), gold, silver, gems, coal, oil, and crafted goods (steel, bronze, tools, weapons,
+  jewellery, pottery, glass, textiles) made from inputs, e.g. steel from iron ore plus coal (or charcoal
+  before the early modern era), bronze from copper plus tin.
+- Cities produce from the land around them (fertility, forests, coasts) and from the mines within
+  300 km, and consume according to their population. Demand changes with the **era** (Ancient,
+  Medieval, Early modern, Industrial, Modern): e.g. coal and steel boom in the industrial era, and oil
+  only matters from then on.
+- Each good flows from the cheapest supplier along a pathfound route. Travel time depends on terrain,
+  navigable rivers and lakes, sea lanes (early sailors hug the coast; sailing ships ride the winds;
+  steam ignores them) and the cost of loading at ports. Cheap bulk goods stay local; luxuries travel far.
+- The map shows the main routes (blue by water, brown by land, thicker = more valuable). Pick a good to
+  see only its routes and its price range; pick a route to see its travel time and cargo; select a city
+  to see its routes, exports and imports.
+- **Add your own routes**: click two cities and the app finds the best path for the era. Saved with the world.
+
 ### Nations, cultures and cities (Nations and Cities tabs)
 - **Cultures** with their own naming languages (Nordic, Latin, Slavic, Eastern, Desert, Elvish,
   Celtic, Mesoamerican), so every nation's towns sound related.

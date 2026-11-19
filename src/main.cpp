@@ -7,6 +7,7 @@
 #include "ui.h"
 #include "persistence.h"
 #include "politics.h"
+#include "trade.h"
 #include <vector>
 #include <thread>
 #include <fstream>
@@ -100,7 +101,18 @@ struct App {
     Planet planet;
     World world;
     Document doc;
+    Economy econ;
+    size_t econCities = 0;
     int styleUi = 0;
+    void simulateTrade() {
+        econ.simulate(world, doc, (Era)std::max(0, std::min(4, doc.era)));
+        econCities = doc.cities.size();
+        for (auto& cr : doc.customRoutes) {
+            TradeRoute r; r.from = cr.first; r.to = cr.second; r.custom = true;
+            r.days = econ.findPath(world, doc, cr.first, cr.second, r.cells, r.seaShare);
+            if (r.days >= 0) econ.routes.push_back(r);
+        }
+    }
     bool labelsDirty = true;
     struct Label { double lat, lon, areaKm2; };
     std::vector<Label> nationLabels;
@@ -141,6 +153,7 @@ struct App {
         doc = Document{};
         doc.ensureOwner(World::W * World::H);
         labelsDirty = true;
+        econ = Economy{};
         world.selectedFavor.clear();
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
         map->reset();
@@ -162,6 +175,7 @@ struct App {
         doc = d.doc;
         doc.ensureOwner(World::W * World::H);
         labelsDirty = true;
+        econ = Economy{};
     }
     // After sculpting or changing the tilt: re-run the climate on the new terrain
     void recalcClimate() {
@@ -223,6 +237,8 @@ int main() {
     bool cityNameEdit = false, cityNotesEdit = false, showSites = false, showCities = true, showLabels = true;
     std::vector<std::pair<double, double>> sites;
     int lastNationSel = -2, lastCitySel = -2;
+    bool showRoutes = true;
+    int goodSel = -1, goodScroll = 0, routeSel = -1, routeScroll = 0, routeTool = 0, routePickA = -1;
     auto randomColor = [](unsigned char& r, unsigned char& g, unsigned char& b) {
         double hue = GetRandomValue(0, 5999) / 1000.0; int hi = (int)hue; double f = hue - hi;
         double rgb[6][3] = {{1, f, 0}, {1 - f, 1, 0}, {0, 1, f}, {0, 1 - f, 1}, {f, 0, 1}, {1, 0, 1 - f}};
@@ -248,6 +264,8 @@ int main() {
         const bool placingCity = tab == TabCities && cityTool == 1;
         const bool anyTool = activeTool > 0 || paintingTerritory || placingCity;
         app.updateLabels();
+        if (app.econ.valid && app.doc.cities.size() != app.econCities) app.econ.valid = false;
+        const bool pickingRoute = tab == TabTrade && routeTool == 1;
         // city under the mouse (for selecting and tooltips)
         int hoverCity = -1;
         if (showCities && !overPanel) {
@@ -271,9 +289,21 @@ int main() {
             view.centerLat = lat0 + (mouse.y - sh / 2.0) / view.pxPerDeg;
         }
         bool clickedCity = false;
-        if (!overPanel && !anyTool && hoverCity >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (!overPanel && pickingRoute && hoverCity >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            clickedCity = true;
+            if (routePickA < 0) { routePickA = hoverCity; setStatus("Now click the destination city"); }
+            else if (hoverCity != routePickA) {
+                app.doc.customRoutes.push_back({routePickA, hoverCity});
+                TradeRoute r; r.from = routePickA; r.to = hoverCity; r.custom = true;
+                if (!app.econ.valid) app.simulateTrade();
+                r.days = app.econ.findPath(app.world, app.doc, routePickA, hoverCity, r.cells, r.seaShare);
+                if (r.days >= 0) { app.econ.routes.push_back(r); setStatus(TextFormat("Route added: %.0f days", r.days)); }
+                else setStatus("No way to get there in this era");
+                routePickA = -1;
+            }
+        } else if (!overPanel && !anyTool && hoverCity >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             citySel = hoverCity; clickedCity = true;
-            if (tab != TabCities) tab = TabCities;
+            if (tab != TabCities && tab != TabTrade) tab = TabCities;
         }
         if (!overPanel && (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) ||
                            (!anyTool && !clickedCity && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))))
@@ -411,6 +441,30 @@ int main() {
                 bool fantasy = map.style() == MapStyle::Fantasy;
                 if (!fantasy) DrawTextEx(GetFontDefault(), up.c_str(), {at.x + 1.5f, at.y + 1.5f}, size, spacing, Fade(BLACK, 0.6f));
                 DrawTextEx(GetFontDefault(), up.c_str(), at, size, spacing, fantasy ? Color{80, 50, 30, 220} : Fade(RAYWHITE, 0.92f));
+            }
+        }
+        // ---- Trade routes ----
+        if (showRoutes && app.econ.valid && (tab == TabTrade || ov == Overlay::Political)) {
+            const auto& E = app.econ;
+            double minV = E.routes.size() > 300 ? E.routes[std::min<size_t>(299, E.routes.size() - 1)].value : 0;
+            double maxV = E.routes.empty() ? 1 : std::max(1e-9, E.routes.front().value);
+            for (int ri = 0; ri < (int)E.routes.size(); ri++) {
+                const TradeRoute& r = E.routes[ri];
+                bool carries = goodSel < 0;
+                if (!carries) for (auto& g : r.goods) if (g.first == goodSel) { carries = true; break; }
+                bool sel = ri == routeSel || (citySel >= 0 && (r.from == citySel || r.to == citySel));
+                if (!r.custom && !sel && (!carries || (goodSel < 0 && r.value < minV))) continue;
+                if (r.from >= (int)app.doc.cities.size() || r.to >= (int)app.doc.cities.size()) continue;
+                float wpx = r.custom ? 2.5f : (float)clampd(1 + 3.5 * std::log10(1 + 9 * r.value / maxV), 1, 5);
+                Vector2 prev{0, 0}; bool have = false; int k = 0;
+                for (int c : r.cells) {
+                    Vector2 p = toScreen(World::cellLat(c / World::W), World::cellLon(c % World::W));
+                    bool water = app.world.elev[c] <= 0 || (!app.world.discharge.empty() && app.world.discharge[c] > 400);
+                    Color col = r.custom ? Color{250, 210, 40, 230} : (water ? Color{30, 90, 200, 210} : Color{150, 90, 40, 210});
+                    if (sel) col = Color{255, 60, 200, 240};
+                    if (have && std::fabs(p.x - prev.x) < sw / 2 && !(r.custom && (k / 2) % 2 == 1)) DrawLineEx(prev, p, wpx, col);
+                    prev = p; have = true; k++;
+                }
             }
         }
         // ---- Cities ----
@@ -793,6 +847,14 @@ int main() {
                 }
                 L.label(TextFormat("Nation: %s", c.nation >= 0 && c.nation < (int)app.doc.nations.size() ? app.doc.nations[c.nation].name.c_str() : "independent"));
                 L.label(TextFormat("Location: %.2f, %.2f", c.lat, c.lon));
+                if (app.econ.valid) {
+                    auto ex = app.econ.topExports(citySel, 3), im = app.econ.topImports(citySel, 3);
+                    std::string es, is;
+                    for (auto& g : ex) { if (!es.empty()) es += ", "; es += goodDefs()[g.first].name; }
+                    for (auto& g : im) { if (!is.empty()) is += ", "; is += goodDefs()[g.first].name; }
+                    L.note(("Exports: " + (es.empty() ? std::string("nothing") : es)).c_str());
+                    L.note(("Imports: " + (is.empty() ? std::string("nothing") : is)).c_str());
+                }
                 GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Notes");
                 if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60, 28}, cityNotesBuf, 255, cityNotesEdit)) cityNotesEdit = !cityNotesEdit;
                 c.notes = cityNotesBuf;
@@ -804,7 +866,62 @@ int main() {
             } else {
                 L.note("Click a city on the map or in the list to edit it. Use 'Place new city' and click the map to found one.");
             }
-        } else if (tab >= TabTrade && tab <= TabLore) {
+        } else if (tab == TabTrade) {
+            L.heading("ECONOMY");
+            int eraUi = app.doc.era;
+            GuiComboBox(Rectangle{L.x, L.y, L.w, 28}, "Era: Ancient;Era: Medieval;Era: Early modern (sailing);Era: Industrial (rail, steam);Era: Modern", &eraUi);
+            L.y += 36;
+            if (eraUi != app.doc.era) { app.doc.era = eraUi; app.econ.valid = false; }
+            if (app.doc.cities.empty()) L.note("Add cities first (Nations or Cities tab), then simulate trade.");
+            else if (L.button(app.econ.valid ? "Re-run trade simulation" : "Simulate trade")) { app.simulateTrade(); routeSel = -1; }
+            if (app.econ.valid) {
+                L.label(TextFormat("%zu routes, total trade %.3g coins/yr", app.econ.routes.size(), app.econ.totalTradeValue));
+                L.check("Show trade routes", &showRoutes);
+                L.heading("GOODS");
+                const auto& G = goodDefs();
+                std::string items = "All goods";
+                for (int g = 0; g < (int)G.size(); g++) { items += ";"; items += G[g].name; }
+                int gs = goodSel + 1;
+                GuiListView(Rectangle{L.x, L.y, L.w, 150}, items.c_str(), &goodScroll, &gs);
+                L.y += 158;
+                goodSel = gs - 1;
+                if (goodSel >= 0) {
+                    double lo = 1e30, hi = 0; int sellers = 0;
+                    for (size_t c = 0; c < app.econ.price.size(); c++) {
+                        lo = std::min(lo, app.econ.price[c][goodSel]); hi = std::max(hi, app.econ.price[c][goodSel]);
+                        if (app.econ.production[c][goodSel] > app.econ.demand[c][goodSel]) sellers++;
+                    }
+                    L.label(TextFormat("Made: %s per year", formatTonnes(app.econ.totalProduction[goodSel])));
+                    L.label(TextFormat("Price: %.3g to %.3g coins/t   Exporters: %d", lo, hi, sellers));
+                }
+                L.heading("TOP ROUTES");
+                std::string ritems;
+                int shown = std::min<int>(40, (int)app.econ.routes.size());
+                for (int i = 0; i < shown; i++) {
+                    const TradeRoute& r = app.econ.routes[i];
+                    if (r.from >= (int)app.doc.cities.size() || r.to >= (int)app.doc.cities.size()) continue;
+                    if (!ritems.empty()) ritems += ";";
+                    ritems += cleanList(app.doc.cities[r.from].name) + " > " + cleanList(app.doc.cities[r.to].name);
+                }
+                GuiListView(Rectangle{L.x, L.y, L.w, 120}, ritems.c_str(), &routeScroll, &routeSel);
+                L.y += 128;
+                if (routeSel >= 0 && routeSel < (int)app.econ.routes.size()) {
+                    const TradeRoute& r = app.econ.routes[routeSel];
+                    L.label(TextFormat("%.0f days, %.0f%% by water, %s/yr", r.days, r.seaShare * 100, formatTonnes(r.tonnes)));
+                    std::string g;
+                    for (size_t k = 0; k < r.goods.size() && k < 4; k++) { if (k) g += ", "; g += goodDefs()[r.goods[k].first].name; }
+                    L.note(("Carries: " + g).c_str());
+                }
+                L.heading("YOUR OWN ROUTES");
+                GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 4) / 2, 28}, "Off;Add route", &routeTool);
+                L.y += 36;
+                if (routeTool == 1) L.note(routePickA < 0 ? "Click the starting city on the map." : "Click the destination city.");
+                if (!app.doc.customRoutes.empty() && L.button("Remove all my routes")) {
+                    app.doc.customRoutes.clear();
+                    app.econ.routes.erase(std::remove_if(app.econ.routes.begin(), app.econ.routes.end(), [](const TradeRoute& r) { return r.custom; }), app.econ.routes.end());
+                }
+            }
+        } else if (tab >= TabHistory && tab <= TabLore) {
             L.heading("COMING SOON");
             L.note("This part of the world builder is still being built. See PROGRESS.md in the project for what's done.");
         } else if (tab == 2) {
