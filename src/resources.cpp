@@ -13,6 +13,7 @@ const char* resGroupName(ResGroup g) {
         case ResGroup::Fuel: return "Fuels";
         case ResGroup::Industrial: return "Industrial minerals";
         case ResGroup::Building: return "Building stone";
+        case ResGroup::Fantasy: return "Fantasy";
         default: return "?";
     }
 }
@@ -27,9 +28,35 @@ enum R {
     RCount
 };
 
-const std::vector<ResourceDef>& resourceDefs() {
+namespace {
+std::vector<ResourceDef>& allDefs();
+std::vector<CustomResource>& customRules() { static std::vector<CustomResource> c; return c; }
+std::vector<std::string>& customNames() { static std::vector<std::string> n; return n; }
+std::vector<std::string>& customSettings() { static std::vector<std::string> n; return n; }
+}
+
+int baseResourceCount() { return (int)RCount; }
+
+void setCustomResources(const std::vector<CustomResource>& c) {
+    std::vector<ResourceDef>& d = allDefs();
+    d.resize(RCount);
+    customRules() = c;
+    customNames().clear(); customSettings().clear();
+    customNames().reserve(c.size()); customSettings().reserve(c.size());
+    for (const CustomResource& cr : c) { customNames().push_back(cr.name); customSettings().push_back(cr.setting); }
+    for (size_t i = 0; i < c.size(); i++) {
+        const CustomResource& cr = c[i];
+        d.push_back(ResourceDef{customNames()[i].c_str(), ResGroup::Fantasy, cr.r, cr.g, cr.b, cr.typicalTonnes, 1, 10, 0, 1500,
+                                cr.abundance, cr.minElev < 0, customSettings()[i].c_str()});
+    }
+}
+
+const std::vector<ResourceDef>& resourceDefs() { return allDefs(); }
+
+namespace {
+std::vector<ResourceDef>& allDefs() {
     using G = ResGroup;
-    static const std::vector<ResourceDef> defs = {
+    static std::vector<ResourceDef> defs = {
         {"Iron ore", G::Metal, 170, 80, 60, 5e8, 30, 65, 0, 300, 120, false, "Ancient banded iron formations in old shields; ironstones in sedimentary basins"},
         {"Copper", G::Metal, 200, 110, 50, 4e8, 0.3, 2.5, 0, 1200, 90, false, "Porphyry deposits above subduction zones; sediment-hosted in rifts"},
         {"Gold", G::Metal, 240, 200, 40, 3e7, 0.0001, 0.001, 0, 2500, 90, false, "Old greenstone belts in shields; quartz veins in mountain belts"},
@@ -89,6 +116,7 @@ const std::vector<ResourceDef>& resourceDefs() {
     };
     return defs;
 }
+}  // namespace
 
 namespace {
 uint32_t rng(uint32_t& s) { s = s * 1664525u + 1013904223u; return s; }
@@ -121,6 +149,14 @@ std::vector<float> World::favorability(int res) const {
         bool collision = nb == Boundary::Collision && dB < 600;
         bool rift = nb == Boundary::Rift && dB < 300;
         double v = 0;
+        if (res >= (int)RCount) {
+            const CustomResource& cr = customRules()[res - RCount];
+            bool ok = (cr.rocks >> (int)r) & 1;
+            ok = ok && ((cr.boundaries >> (int)nb) & 1) && dB <= cr.maxBoundaryKm;
+            ok = ok && age >= cr.minAge && age <= cr.maxAge && h >= cr.minElev && h <= cr.maxElev;
+            ok = ok && temp >= cr.minTemp && temp <= cr.maxTemp && rain >= cr.minRain && rain <= cr.maxRain;
+            v = ok ? 0.9 : 0;
+        } else
         switch (res) {
             case Iron: v = (shield && age > 1800 ? 0.9 : 0) + (sed ? 0.25 : 0); break;
             case Copper: v = (arc && (vol || plu) ? 0.95 : 0) + (rift && sed ? 0.5 : 0); break;
@@ -169,6 +205,7 @@ std::vector<float> World::favorability(int res) const {
             default: break;
         }
         if (!resourceDefs()[res].offshoreOk && !land) v *= 0.0;
+        (void)hot; (void)cold;
         if (v <= 0) continue;
         // Deposits cluster in districts rather than spreading evenly
         const Vec3d& d = cellDir[i];

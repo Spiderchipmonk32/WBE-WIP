@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include "world.h"
 
 // Everything the user creates on top of the generated world.
 
@@ -110,6 +111,7 @@ struct Document {
     std::vector<uint8_t> faith;    // per World cell: 0 = none, otherwise religion index + 1
     std::vector<CityPlan> plans;
     std::vector<NationRelation> relations;
+    std::vector<CustomResource> customResources;
     std::vector<Bookmark> bookmarks;
     int presentYear = 0;           // the year city populations are given for
     // Population of a city in a given year (grows from its founding to the present)

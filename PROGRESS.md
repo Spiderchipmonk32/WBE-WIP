@@ -5,6 +5,13 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Fantasy resource editor (Resources tab → Fantasy)
+- Invent your own resources (mithril, mana crystals, dragonglass...): name, colour, description, and the
+  rules for where they form: allowed rock types, which kind of plate edge they sit near, rock age,
+  height range, temperature and rainfall ranges, how many deposits and how big.
+- **Place deposits** puts them on the map alongside the real resources (existing deposits don't move),
+  with the same heatmap, markers and hover details. Saved with the world and kept when you generate a new planet.
+
 ### Import images
 - **Drag a PNG/JPG onto the window** and choose:
   - **The land shape**: the image (a whole-world map, twice as wide as tall; dark = sea, bright = high

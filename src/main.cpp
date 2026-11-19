@@ -195,8 +195,11 @@ struct App {
         world.sampleElevation(planet);
         world.generateRivers();   // again, on the eroded land
         world.generateHabitability();
+        std::vector<CustomResource> keepCustom = doc.customResources;   // your invented resources survive a new planet
+        setCustomResources(keepCustom);
         world.generateResources(ui.seed);
         doc = Document{};
+        doc.customResources = keepCustom;
         doc.ensureOwner(World::W * World::H);
         labelsDirty = true;
         econ = Economy{};
@@ -223,6 +226,11 @@ struct App {
         doc.ensureOwner(World::W * World::H);
         labelsDirty = true;
         econ = Economy{};
+        if (!doc.customResources.empty()) {   // place the saved fantasy resources too
+            map->waitIdle();
+            setCustomResources(doc.customResources);
+            world.generateResources(ui.seed);
+        }
         appliedYear = INT_MIN; lastEventStrokes.clear();
     }
     // After sculpting or changing the tilt: re-run the climate on the new terrain
@@ -304,6 +312,9 @@ int main() {
     bool cultureNameEdit = false, religionNameEdit = false, religionNotesEdit = false;
     float religionCountUi = 6;
     int relTypeUi = 0; bool relPick = false;
+    int customSel = -1, lastCustomSel = -2;
+    char customNameBuf[64] = "", customSettingBuf[128] = "";
+    bool customNameEdit = false, customSettingEdit = false;
     int bookmarkScroll = 0, bookmarkSel = -1;
     bool showCaravans = true;
     std::vector<std::pair<double, double>> measurePts;
@@ -1017,7 +1028,7 @@ int main() {
             if (measureTool == 1) L.note(measurePts.empty() ? "Click points on the map. Right-click to clear." : "Keep clicking to add points; right-click to clear.");
         } else if (tab == 3) {
             L.heading("RESOURCES");
-            GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 26}, "Metals;Gems;Fuels\nIndustrial;Building", &resGroupUi);
+            GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 26}, "Metals;Gems;Fuels\nIndustrial;Building;Fantasy", &resGroupUi);
             L.y += 62;
             const auto& defs = resourceDefs();
             std::vector<int> ids;
@@ -1025,8 +1036,85 @@ int main() {
             for (int r = 0; r < (int)defs.size(); r++)
                 if ((int)defs[r].group == resGroupUi) { if (!items.empty()) items += ";"; items += defs[r].name; ids.push_back(r); }
             int prevActive = resListActive;
-            GuiListView(Rectangle{L.x, L.y, L.w, 230}, items.c_str(), &resListScroll, &resListActive);
-            L.y += 240;
+            float listH = resGroupUi == (int)ResGroup::Fantasy ? 96.f : 230.f;
+            GuiListView(Rectangle{L.x, L.y, L.w, listH}, items.c_str(), &resListScroll, &resListActive);
+            L.y += listH + 8;
+            if (resGroupUi == (int)ResGroup::Fantasy) {
+                float bw2 = (L.w - 8) / 2;
+                if (GuiButton(Rectangle{L.x, L.y, bw2, 28}, "New fantasy resource")) {
+                    CustomResource c;
+                    static const char* names[] = {"Mithril", "Mana crystal", "Dragonglass", "Starsteel", "Moonsilver", "Aetherium", "Bloodstone", "Sunstone"};
+                    c.name = names[app.doc.customResources.size() % 8];
+                    randomColor(c.r, c.g, c.b);
+                    app.doc.customResources.push_back(c);
+                    customSel = (int)app.doc.customResources.size() - 1;
+                }
+                if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, "Place deposits")) {
+                    map.waitIdle();
+                    setCustomResources(app.doc.customResources);
+                    app.world.generateResources(app.ui.seed);
+                    if (app.world.selectedRes >= 0 && app.world.selectedRes < (int)resourceDefs().size())
+                        app.world.selectedFavor = app.world.favorability(app.world.selectedRes);
+                    else app.world.selectedRes = -1;
+                    map.invalidateAll();
+                    setStatus("Fantasy resources placed");
+                }
+                L.y += 34;
+                if (customSel >= (int)app.doc.customResources.size()) customSel = -1;
+                if (customSel < 0 && !app.doc.customResources.empty()) customSel = 0;
+                if (customSel != lastCustomSel) {
+                    lastCustomSel = customSel; customNameEdit = customSettingEdit = false;
+                    if (customSel >= 0) {
+                        std::strncpy(customNameBuf, app.doc.customResources[customSel].name.c_str(), 63);
+                        std::strncpy(customSettingBuf, app.doc.customResources[customSel].setting.c_str(), 127);
+                    }
+                }
+                if (customSel >= 0) {
+                    CustomResource& c = app.doc.customResources[customSel];
+                    if (GuiTextBox(Rectangle{L.x, L.y, L.w - 36, 26}, customNameBuf, 63, customNameEdit)) customNameEdit = !customNameEdit;
+                    c.name = customNameBuf;
+                    DrawRectangle((int)(L.x + L.w - 28), (int)L.y, 28, 26, Color{c.r, c.g, c.b, 255});
+                    if (CheckCollisionPointRec(mouse, Rectangle{L.x + L.w - 28, L.y, 28, 26}) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) randomColor(c.r, c.g, c.b);
+                    L.y += 30;
+                    if (GuiTextBox(Rectangle{L.x, L.y, L.w, 26}, customSettingBuf, 127, customSettingEdit)) customSettingEdit = !customSettingEdit;
+                    c.setting = customSettingBuf;
+                    L.y += 30;
+                    DrawText("Rock:", (int)L.x, (int)L.y + 2, 15, GRAY);
+                    static const char* rk[] = {"Sea floor", "Sediment", "Volcanic", "Granite", "Metamorph.", "Shield"};
+                    for (int i = 0; i < 6; i++) {
+                        bool on = (c.rocks >> i) & 1;
+                        GuiCheckBox(Rectangle{L.x + 50 + (i % 3) * 90.f, L.y + (i / 3) * 22.f, 16, 16}, rk[i], &on);
+                        c.rocks = (uint8_t)((c.rocks & ~(1 << i)) | (on ? 1 << i : 0));
+                    }
+                    L.y += 46;
+                    DrawText("Near:", (int)L.x, (int)L.y + 2, 15, GRAY);
+                    static const char* bd[] = {"Anywhere", "Collision", "Subduction", "Island arc", "Rift", "Ridge", "Fault"};
+                    for (int i = 0; i < 7; i++) {
+                        bool on = (c.boundaries >> i) & 1;
+                        GuiCheckBox(Rectangle{L.x + 50 + (i % 3) * 90.f, L.y + (i / 3) * 22.f, 16, 16}, bd[i], &on);
+                        c.boundaries = (uint8_t)((c.boundaries & ~(1 << i)) | (on ? 1 << i : 0));
+                    }
+                    L.y += 68;
+                    auto pair = [&](const char* la, float* a, float amin, float amax, const char* lb, float* b, float bmin, float bmax) {
+                        float hw = (L.w - 10) / 2;
+                        DrawText(TextFormat(la, *a), (int)L.x, (int)L.y, 14, DARKGRAY);
+                        DrawText(TextFormat(lb, *b), (int)(L.x + hw + 10), (int)L.y, 14, DARKGRAY);
+                        GuiSliderBar(Rectangle{L.x, L.y + 16, hw, 14}, NULL, NULL, a, amin, amax);
+                        GuiSliderBar(Rectangle{L.x + hw + 10, L.y + 16, hw, 14}, NULL, NULL, b, bmin, bmax);
+                        if (*a > *b && bmin == amin) std::swap(*a, *b);
+                        L.y += 36;
+                    };
+                    pair("Min age %.0f Myr", &c.minAge, 0, 4000, "Max age %.0f Myr", &c.maxAge, 0, 4000);
+                    pair("Min height %.0f m", &c.minElev, -11000, 9000, "Max height %.0f m", &c.maxElev, -11000, 9000);
+                    pair("Min temp %.0f C", &c.minTemp, -60, 50, "Max temp %.0f C", &c.maxTemp, -60, 50);
+                    pair("Min rain %.0f mm", &c.minRain, 0, 6000, "Max rain %.0f mm", &c.maxRain, 0, 6000);
+                    float ab = (float)c.abundance, sz = (float)std::log10(std::max(1.0, c.typicalTonnes));
+                    pair("Deposits: %.0f", &ab, 1, 300, "Size: 10^%.1f t", &sz, 0, 10);
+                    c.abundance = (int)ab; c.typicalTonnes = std::pow(10.0, (double)sz);
+                    if (L.button("Delete this resource", 26)) { app.doc.customResources.erase(app.doc.customResources.begin() + customSel); customSel = -1; }
+                    L.note("Press Place deposits to put your changes on the map.");
+                }
+            }
             if (resListActive >= (int)ids.size()) resListActive = -1;
             int chosen = resListActive >= 0 ? ids[resListActive] : -1;
             if ((resListActive != prevActive || chosen != app.world.selectedRes) && chosen >= 0 && chosen != app.world.selectedRes) {
@@ -1841,7 +1929,7 @@ int main() {
         DrawText("Scroll: zoom   Right/middle-drag or WASD: move", (int)(panel.x + panel.width) + 24, sh - 28, 16, Fade(th.text, 0.8f));
         EndDrawing();
         typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
-                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || cultureNameEdit || religionNameEdit || religionNotesEdit;
+                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
 
         // ---- Exports (after the frame, so the message above is visible while it works) ----
         static int exportFrames = 0;

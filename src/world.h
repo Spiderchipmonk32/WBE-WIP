@@ -25,7 +25,7 @@ struct Plate {
 
 struct Volcano { double lat, lon; bool hotspot; };
 
-enum class ResGroup : uint8_t { Metal, Gem, Fuel, Industrial, Building, Count };
+enum class ResGroup : uint8_t { Metal, Gem, Fuel, Industrial, Building, Fantasy, Count };
 struct ResourceDef {
     const char* name;
     ResGroup group;
@@ -40,6 +40,23 @@ struct ResourceDef {
 struct Deposit { int res; double lat, lon; double tonnes, grade, depthM; bool offshore; };
 
 const std::vector<ResourceDef>& resourceDefs();
+int baseResourceCount();   // the built-in Earth resources; custom ones follow
+
+// A user-defined resource and the rules for where it forms
+struct CustomResource {
+    std::string name = "Mithril", setting = "Deep in ancient mountains";
+    unsigned char r = 170, g = 210, b = 240;
+    uint8_t rocks = 0x3F;        // bit per Rock type allowed
+    uint8_t boundaries = 0x7F;   // bit per nearest Boundary type allowed (0 = none)
+    float minAge = 0, maxAge = 4000;    // million years
+    float minElev = -11000, maxElev = 9000;
+    float minTemp = -60, maxTemp = 50, minRain = 0, maxRain = 10000;
+    float maxBoundaryKm = 5000;
+    int abundance = 25;
+    double typicalTonnes = 1e5;
+};
+// Replace the custom part of the resource list (call before generating resources)
+void setCustomResources(const std::vector<CustomResource>& c);
 
 enum class Biome : uint8_t { Ocean, SeaIce, IceSheet, Tundra, BorealForest, TemperateForest, TemperateRainforest,
     Grassland, Mediterranean, ColdDesert, HotDesert, Savanna, TropicalSeasonalForest, TropicalRainforest, Wetland, Count };

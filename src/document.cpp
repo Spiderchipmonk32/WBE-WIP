@@ -72,6 +72,10 @@ void writeDocument(std::ostream& o, const Document& doc) {
           << (c.capital ? 1 : 0) << " " << c.founded << " " << quote(c.notes) << " " << c.destroyed << "\n";
     o << "era " << doc.era << "\n";
     o << "present " << doc.presentYear << "\n";
+    for (auto& c : doc.customResources)
+        o << "customres " << (int)c.r << " " << (int)c.g << " " << (int)c.b << " " << (int)c.rocks << " " << (int)c.boundaries << " " << c.minAge << " "
+          << c.maxAge << " " << c.minElev << " " << c.maxElev << " " << c.minTemp << " " << c.maxTemp << " " << c.minRain << " " << c.maxRain << " "
+          << c.maxBoundaryKm << " " << c.abundance << " " << c.typicalTonnes << " " << quote(c.name) << " " << quote(c.setting) << "\n";
     for (auto& r : doc.relations) o << "relation " << r.a << " " << r.b << " " << (int)r.type << "\n";
     for (auto& b : doc.bookmarks) o << "bookmark " << b.lat << " " << b.lon << " " << b.zoom << " " << quote(b.name) << "\n";
     o << "years " << doc.currentYear << " " << doc.yearMin << " " << doc.yearMax << "\n";
@@ -169,6 +173,16 @@ bool readDocumentLine(const std::string& key, std::istringstream& in, const std:
     }
     if (key == "era") { in >> doc.era; return true; }
     if (key == "present") { in >> doc.presentYear; return true; }
+    if (key == "customres") {
+        CustomResource c; int r, g, b, rk, bd;
+        in >> r >> g >> b >> rk >> bd >> c.minAge >> c.maxAge >> c.minElev >> c.maxElev >> c.minTemp >> c.maxTemp >> c.minRain >> c.maxRain
+           >> c.maxBoundaryKm >> c.abundance >> c.typicalTonnes;
+        c.r = (unsigned char)r; c.g = (unsigned char)g; c.b = (unsigned char)b; c.rocks = (uint8_t)rk; c.boundaries = (uint8_t)bd;
+        size_t pos = (size_t)in.tellg(); if (pos == std::string::npos) return false;
+        unquote(line, pos, c.name); unquote(line, pos, c.setting);
+        doc.customResources.push_back(c);
+        return true;
+    }
     if (key == "relation") { NationRelation r; int t; if (in >> r.a >> r.b >> t) { r.type = (Relation)t; doc.relations.push_back(r); } return true; }
     if (key == "bookmark") {
         Bookmark b; in >> b.lat >> b.lon >> b.zoom;
