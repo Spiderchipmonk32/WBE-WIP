@@ -2,6 +2,8 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <cmath>
+#include <algorithm>
 
 // Everything the user creates on top of the generated world.
 
@@ -89,6 +91,11 @@ struct CityPlan {
     bool landmarksMade = false;
 };
 
+enum class Relation : uint8_t { Alliance, TradePact, Rivalry, War, Vassal, Count };
+const char* relationName(Relation r);
+struct NationRelation { int a = 0, b = 0; Relation type = Relation::Alliance; };
+struct Bookmark { std::string name; double lat = 0, lon = 0, zoom = 5; };
+
 struct Document {
     int version = 1;
     std::vector<Culture> cultures;
@@ -102,6 +109,16 @@ struct Document {
     std::vector<Religion> religions;
     std::vector<uint8_t> faith;    // per World cell: 0 = none, otherwise religion index + 1
     std::vector<CityPlan> plans;
+    std::vector<NationRelation> relations;
+    std::vector<Bookmark> bookmarks;
+    int presentYear = 0;           // the year city populations are given for
+    // Population of a city in a given year (grows from its founding to the present)
+    double populationAt(const City& c, int year) const {
+        if (year >= presentYear || c.founded >= presentYear) return c.population;
+        double t = (double)(year - c.founded) / (double)(presentYear - c.founded);
+        if (t <= 0) return 0;
+        return c.population * std::pow(std::max(0.02, std::min(1.0, t)), 1.4);
+    }
     CityPlan* planFor(int city) { for (auto& p : plans) if (p.city == city) return &p; return nullptr; }
     std::vector<std::pair<int, int>> customRoutes;   // city index pairs
 
@@ -114,7 +131,7 @@ struct Document {
         for (const Ruler& r : nations[nation].rulers) if (r.start <= year && year < r.end) return &r;
         return nullptr;
     }
-    void removeNation(int n);      // keeps indices in cities and territory consistent
+    void removeNation(int n);      // keeps indices in cities, territory and relations consistent
     void removeCity(int c) {
         if (c < 0 || c >= (int)cities.size()) return;
         cities.erase(cities.begin() + c);

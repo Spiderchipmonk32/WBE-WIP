@@ -53,7 +53,9 @@ public:
     static int detailOctavesFor(double spacingKm, double radiusKm);
 
     // Sculpting
-    void beginStrokeGroup(BrushType type, const Vec3d& dir, double radiusKm);
+    void beginStrokeGroup(BrushType type, const Vec3d& dir, double radiusKm, double fixedTarget = -1e9);
+    // One-click landforms: 0 crater, 1 volcano, 2 mesa
+    void addStamp(int kind, const Vec3d& dir, double radiusKm);
     void addDab(BrushType type, const Vec3d& dir, double radiusKm, double amount);
     // Removes the last group; returns the areas it touched so they can be redrawn.
     std::vector<std::pair<Vec3d, double>> undo();

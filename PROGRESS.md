@@ -5,6 +5,21 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### More sculpting, diplomacy, living routes, storms, bookmarks and exports
+- **Sculpt tab**: *Make land* and *Make sea* brushes (paint coastlines directly), and one-click stamps
+  for an **impact crater**, a **volcano** and a **mesa** (size = brush radius).
+- **Populations grow over time**: scrub the timeline back and cities shrink towards their founding
+  (markers and tooltips show the population in that year).
+- **Diplomacy**: alliances, trade pacts, rivalries, wars and vassals between neighbours are generated
+  with the nations; add or change them from a nation's card (pick the type, then click the other nation).
+  Shown as coloured lines between capitals on the political map.
+- **Caravans and ships** move along the main trade routes.
+- **Storm seasons** overlay: hurricane/typhoon zones over warm seas for each month (and their landfall
+  coasts), plus winter storm tracks.
+- **Bookmarks** (Map tab): save views and jump back to them.
+- **Exports**: the current view in high resolution (3x, sharper tiles), and a **chronicle** in Markdown
+  with every nation, ruler, religion, timeline event and lore article.
+
 ### City editor (Cities tab → select a city → Open city editor)
 - A separate screen for one city, showing its **real local terrain** in high detail: coastline,
   rivers (at their true width), lakes and hills, all taken from the world.

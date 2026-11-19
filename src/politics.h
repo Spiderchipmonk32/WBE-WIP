@@ -17,3 +17,5 @@ void generateReligions(Document& doc, const World& w, int count, uint32_t seed);
 // Rulers for each nation from its founding to the current year
 void generateRulers(Document& doc, uint32_t seed);
 const char* rulerTitle(int government, bool female);
+// Relations between neighbouring nations (alliances, rivalries, wars, vassals)
+void generateRelations(Document& doc, uint32_t seed);

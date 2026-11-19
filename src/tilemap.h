@@ -19,7 +19,7 @@
 enum class MapStyle { Realistic = 0, Fantasy = 1, Elevation = 2 };
 
 // Data drawn on top of the map style
-enum class Overlay { None = 0, Plates, Rock, Earthquakes, Temperature, Rainfall, Biomes, Resource, Political, Population, Wind, Currents, Religion, Culture, Count };
+enum class Overlay { None = 0, Plates, Rock, Earthquakes, Temperature, Rainfall, Biomes, Resource, Political, Population, Wind, Currents, Religion, Culture, Storms, Count };
 
 struct MapView {
     double centerLon = 0, centerLat = 15;
@@ -56,6 +56,8 @@ public:
 
     // Render the whole world at a zoom level into one RGBA image (for exporting). Blocks.
     void renderWorld(int level, std::vector<unsigned char>& rgba, int& w, int& h) const;
+    // Render one tile right now (for exports), in the current style and overlay
+    void renderTile(int level, int tx, int ty, std::vector<unsigned char>& rgba) const;
 
     int pending() const { return (int)inFlight_.size(); }
     int cached() const { return (int)cache_.size(); }

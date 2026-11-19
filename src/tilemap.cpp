@@ -159,6 +159,21 @@ bool TileMap::overlayColor(Overlay o, int param, double lat, double lon, double 
             if (std::fabs(an) < 0.4) return false;
             return an > 0 ? set(230, 70, 50, clampd(an / 6, 0, 0.6)) : set(60, 140, 255, clampd(-an / 6, 0, 0.6));
         }
+        case Overlay::Storms: {
+            if (world_->tempMonth[0].empty()) return false;
+            int m = param >= 0 && param < 12 ? param : 8;
+            double a = std::fabs(lat);
+            double sst = World::sample(world_->tempMonth[m], lat, lon);
+            // tropical cyclones need very warm sea, away from the equator
+            double trop = smoothstepd(26, 29, sst) * smoothstepd(4, 9, a) * (1 - smoothstepd(28, 36, a));
+            if (h > 0) trop *= std::exp(-World::sample(world_->distOceanKm, lat, lon) / 250.0);   // landfall near coasts
+            double u = World::sample(world_->windU[m], lat, lon), v = World::sample(world_->windV[m], lat, lon);
+            bool winter = (lat > 0) == (m <= 2 || m >= 9);
+            double extra = winter ? smoothstepd(38, 48, a) * (1 - smoothstepd(62, 72, a)) * smoothstepd(4, 8, std::sqrt(u * u + v * v)) : 0;
+            if (trop < 0.05 && extra < 0.05) return false;
+            if (trop >= extra) return set(230, 40, 120, clampd(trop * 0.7, 0, 0.7));
+            return set(90, 90, 220, clampd(extra * 0.55, 0, 0.55));
+        }
         case Overlay::Population: {
             if (world_->habitability.empty() || h <= 0) return false;
             double v = World::sample(world_->habitability, lat, lon);
@@ -565,6 +580,13 @@ void TileMap::update(const MapView& v, int sw, int sh) {
             cache_.erase(old[i].second);
         }
     }
+}
+
+void TileMap::renderTile(int level, int tx, int ty, std::vector<unsigned char>& out) const {
+    double TT = tileDeg(level);
+    Vec3d c = dirFromLatLon(90 - (ty + 0.5) * TT, -180 + (tx + 0.5) * TT);
+    Job j{level, tx, ty, 0, style_, overlay_, overlayParam_, planet_->strokesCopyNear(c, TT * kPi / 180 * 0.75 + 0.002)};
+    render(j, out);
 }
 
 void TileMap::renderWorld(int level, std::vector<unsigned char>& out, int& w, int& h) const {

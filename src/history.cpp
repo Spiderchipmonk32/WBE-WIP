@@ -62,6 +62,7 @@ std::vector<Stroke> buildEventStrokes(const Document& doc, int year, double R) {
 void generateHistory(Document& doc, const World& w, uint32_t seed) {
     uint32_t s = seed * 2246822519u + 77u;
     doc.events.clear();
+    doc.presentYear = doc.currentYear;
     int y0 = doc.yearMin, y1 = doc.currentYear;
     if (y1 <= y0) y1 = y0 + 1000;
     auto year = [&](double t) { return y0 + (int)std::round((y1 - y0) * t); };

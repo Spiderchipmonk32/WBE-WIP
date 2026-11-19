@@ -141,9 +141,11 @@ double Planet::elevationWith(const Vec3d& d, int detailOctaves, const std::vecto
     return h - settings_.seaLevel;
 }
 
-void Planet::beginStrokeGroup(BrushType type, const Vec3d& dir, double radiusKm) {
+void Planet::beginStrokeGroup(BrushType type, const Vec3d& dir, double radiusKm, double fixedTarget) {
     group_++;
-    if (type == BrushType::Flatten) {
+    if (fixedTarget > -1e8) {
+        groupTarget_ = fixedTarget + settings_.seaLevel;   // targets are relative to sea level
+    } else if (type == BrushType::Flatten) {
         groupTarget_ = elevation(dir, 14);
     } else if (type == BrushType::Smooth) {
         // average height across the brush
@@ -188,6 +190,37 @@ void Planet::addDab(BrushType type, const Vec3d& dir, double radiusKm, double am
     s.targetM = groupTarget_;
     s.group = group_;
     strokes_.push_back(s);
+}
+
+void Planet::addStamp(int kind, const Vec3d& dir, double r) {
+    auto push = [&](BrushType t, const Vec3d& d, double rad, double amount, double target) {
+        Stroke s{};
+        s.dir = d.normalized(); s.radiusKm = rad; s.type = t; s.amount = amount; s.targetM = target; s.group = group_;
+        s.angRadius = std::min(kPi * 0.95, rad / std::max(1.0, (double)settings_.radiusKm));
+        s.cosRadius = std::cos(s.angRadius);
+        strokes_.push_back(s);
+    };
+    group_++;
+    double R = settings_.radiusKm;
+    Vec3d east = Vec3d{0, 1, 0}.cross(dir).normalized();
+    if (east.length() < 0.5) east = {1, 0, 0};
+    Vec3d north = dir.cross(east);
+    if (kind == 0) {          // impact crater: bowl, rim and central peak
+        double depth = 700 * std::min(3.0, r / 10.0 + 0.5);
+        push(BrushType::Lower, dir, r * 0.95, depth, 0);
+        for (int i = 0; i < 24; i++) {
+            double a = 2 * kPi * i / 24, ang = r / R;
+            push(BrushType::Raise, (dir * std::cos(ang) + (east * std::cos(a) + north * std::sin(a)) * std::sin(ang)), r * 0.35, depth * 0.3, 0);
+        }
+        if (r > 15) push(BrushType::Raise, dir, r * 0.18, depth * 0.4, 0);
+    } else if (kind == 1) {   // volcano with a summit crater
+        push(BrushType::Raise, dir, r, 2400, 0);
+        push(BrushType::Lower, dir, r * 0.16, 450, 0);
+    } else {                  // mesa: a flat-topped plateau with steep sides
+        double h = elevation(dir, 6) + settings_.seaLevel + 700;
+        push(BrushType::Raise, dir, r * 1.1, 1400, 0);
+        push(BrushType::Flatten, dir, r * 0.9, 1.0, h);
+    }
 }
 
 void Planet::setStrokes(const std::vector<Stroke>& s) {

@@ -15,6 +15,10 @@ const char* eventTypeName(EventType t) {
 bool eventChangesTerrain(EventType t) {
     return t == EventType::Meteor || t == EventType::Eruption || t == EventType::Upheaval || t == EventType::Sinking || t == EventType::Magic;
 }
+const char* relationName(Relation r) {
+    static const char* n[] = {"Alliance", "Trade pact", "Rivalry", "War", "Vassal of"};
+    int i = (int)r; return i >= 0 && i < (int)Relation::Count ? n[i] : "?";
+}
 const char* districtName(District d) {
     static const char* n[] = {"None", "Market", "Old town", "Noble quarter", "Temple district", "Residential", "Docks", "Industry", "Farms", "Slums", "Park"};
     int i = (int)d; return i >= 0 && i < (int)District::Count ? n[i] : "?";
@@ -41,6 +45,14 @@ void Document::removeNation(int n) {
         if (c.nation == n) { c.nation = -1; c.capital = false; }
         else if (c.nation > n) c.nation--;
     }
+    std::vector<NationRelation> keep;
+    for (auto r : relations) {
+        if (r.a == n || r.b == n) continue;
+        if (r.a > n) r.a--;
+        if (r.b > n) r.b--;
+        keep.push_back(r);
+    }
+    relations.swap(keep);
 }
 
 // ---- saving ----
@@ -59,6 +71,9 @@ void writeDocument(std::ostream& o, const Document& doc) {
         o << "city " << quote(c.name) << " " << c.lat << " " << c.lon << " " << c.population << " " << c.nation << " " << c.culture << " "
           << (c.capital ? 1 : 0) << " " << c.founded << " " << quote(c.notes) << " " << c.destroyed << "\n";
     o << "era " << doc.era << "\n";
+    o << "present " << doc.presentYear << "\n";
+    for (auto& r : doc.relations) o << "relation " << r.a << " " << r.b << " " << (int)r.type << "\n";
+    for (auto& b : doc.bookmarks) o << "bookmark " << b.lat << " " << b.lon << " " << b.zoom << " " << quote(b.name) << "\n";
     o << "years " << doc.currentYear << " " << doc.yearMin << " " << doc.yearMax << "\n";
     for (const HistEvent& e : doc.events)
         o << "event " << e.year << " " << (int)e.type << " " << e.lat << " " << e.lon << " " << e.radiusKm << " " << e.strength << " "
@@ -153,6 +168,15 @@ bool readDocumentLine(const std::string& key, std::istringstream& in, const std:
         return true;
     }
     if (key == "era") { in >> doc.era; return true; }
+    if (key == "present") { in >> doc.presentYear; return true; }
+    if (key == "relation") { NationRelation r; int t; if (in >> r.a >> r.b >> t) { r.type = (Relation)t; doc.relations.push_back(r); } return true; }
+    if (key == "bookmark") {
+        Bookmark b; in >> b.lat >> b.lon >> b.zoom;
+        size_t pos = (size_t)in.tellg(); if (pos == std::string::npos) return false;
+        unquote(line, pos, b.name);
+        doc.bookmarks.push_back(b);
+        return true;
+    }
     if (key == "cityplan") {
         CityPlan p; int w, lm; in >> p.city >> p.seed >> w >> lm; p.walls = w != 0; p.landmarksMade = lm != 0;
         doc.plans.push_back(p); return true;

@@ -291,3 +291,30 @@ void generateRulers(Document& doc, uint32_t seed) {
         }
     }
 }
+
+void generateRelations(Document& doc, uint32_t seed) {
+    uint32_t s = seed * 2891336453u + 3u;
+    doc.relations.clear();
+    std::map<std::pair<int, int>, int> border;
+    for (int y = 0; y < World::H; y++)
+        for (int x = 0; x < World::W; x++) {
+            int a = doc.nationAt(World::idx(x, y)), b = doc.nationAt(World::idx(x + 1, y)), c = doc.nationAt(World::idx(x, y + 1));
+            if (a >= 0 && b >= 0 && a != b) border[{std::min(a, b), std::max(a, b)}]++;
+            if (a >= 0 && c >= 0 && a != c) border[{std::min(a, c), std::max(a, c)}]++;
+        }
+    std::vector<int> size(doc.nations.size(), 0);
+    for (auto o : doc.owner) if (o) size[o - 1]++;
+    for (auto& b : border) {
+        double r = rnd01(s);
+        NationRelation rel; rel.a = b.first.first; rel.b = b.first.second;
+        if (r < 0.25) rel.type = Relation::Alliance;
+        else if (r < 0.45) rel.type = Relation::TradePact;
+        else if (r < 0.7) rel.type = Relation::Rivalry;
+        else if (r < 0.78) rel.type = Relation::War;
+        else if (r < 0.85) {
+            rel.type = Relation::Vassal;
+            if (size[rel.a] > size[rel.b]) std::swap(rel.a, rel.b);   // the smaller one is the vassal
+        } else continue;
+        doc.relations.push_back(rel);
+    }
+}
