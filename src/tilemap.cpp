@@ -441,7 +441,7 @@ void TileMap::renderWorld(int level, std::vector<unsigned char>& out, int& w, in
     int cols = 4 << level, rows = 2 << level;
     w = cols * TILE; h = rows * TILE;
     out.assign((size_t)w * h * 4, 255);
-    std::vector<Stroke> all = planet_->strokes();
+    std::vector<Stroke> all = planet_->allStrokes();
     std::atomic<int> next{0};
     int total = cols * rows;
     auto work = [&]() {

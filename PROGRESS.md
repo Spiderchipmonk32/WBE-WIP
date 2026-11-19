@@ -5,6 +5,31 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Timeline that changes the map (History tab)
+- A **year slider** (with -100/-10/+10/+100 buttons) shows the world in any year.
+- **Events** placed on the map: notes, meteor impacts, volcanic eruptions, upheavals (land rises),
+  sinkings (land falls), foundings, falls, wars, treaties, disasters and magical events.
+- Terrain events **really change the map** from their year on: a meteor leaves a crater with a raised
+  rim and a central peak (a deep one floods), an eruption builds a volcano with a summit crater, magic
+  raises a ring of land around a chasm. Set each one's size and strength. Your wizard's meteor 100
+  years ago leaves a crater that appears when you scrub past that year.
+- **Cities appear from their founding year** and become **ruins** after they fall.
+- **Generate a history** fills the timeline: city foundings (capitals oldest), wars between neighbours
+  (named, with treaties and the odd sacked city), eruptions at real volcanoes, a meteor strike, plagues
+  and floods.
+- Event markers with tooltips; click one to edit its title, description, year, size and strength.
+
+### Lore (Lore tab)
+- Wiki-style **articles** (place, person, faction, religion, creature, item, event, other) with a
+  multi-line editor (Enter for new lines, Ctrl+V to paste, Escape to stop typing).
+- **Pin articles to the map**; pins show with names, and clicking one opens the article.
+- **Links**: write `[[Another Article]]` and a button appears to jump to it (creating it if needed).
+- Search across titles and text.
+- Events, articles and city foundings/falls are all saved in the world file.
+
+Also: smoother sampling of the tectonic uplift removes faint square patterns in shading; Escape no
+longer closes the app; the WASD keys don't move the map while you're typing.
+
 ### Trade and supply chains (Trade tab)
 - 25 goods: food (grain, fish, meat and wool), timber, salt, stone, clay, sand, ores (iron, copper,
   tin, base metals), gold, silver, gems, coal, oil, and crafted goods (steel, bronze, tools, weapons,
@@ -118,4 +143,4 @@ climate simulation lands, then switch to the real one automatically.
 is still generated as you zoom. Base noise mountains were toned down because the plates now make the big ranges.
 
 ## Next up
-Resources placed by geology → climate and wind → rivers → save/load → nations and cities → trade → timeline and lore.
+Core list is done. Working through the rest of the feature list (symbols, measuring, templates, more).

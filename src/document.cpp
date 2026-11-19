@@ -6,6 +6,21 @@ const char* kGovernments[] = {"Kingdom", "Empire", "Republic", "Theocracy", "Tri
                               "Dictatorship", "Democracy", "City-state", "Magocracy"};
 const int kGovernmentCount = 10;
 
+const char* eventTypeName(EventType t) {
+    static const char* n[] = {"Note", "Meteor impact", "Volcanic eruption", "Upheaval (land rises)", "Sinking (land falls)",
+                              "Founding", "Fall / destruction", "War", "Treaty", "Disaster", "Magical event"};
+    int i = (int)t;
+    return i >= 0 && i < (int)EventType::Count ? n[i] : "?";
+}
+bool eventChangesTerrain(EventType t) {
+    return t == EventType::Meteor || t == EventType::Eruption || t == EventType::Upheaval || t == EventType::Sinking || t == EventType::Magic;
+}
+const char* loreKindName(LoreKind k) {
+    static const char* n[] = {"Place", "Person", "Faction", "Religion", "Creature", "Item", "Event", "Other"};
+    int i = (int)k;
+    return i >= 0 && i < (int)LoreKind::Count ? n[i] : "?";
+}
+
 void Document::removeNation(int n) {
     if (n < 0 || n >= (int)nations.size()) return;
     nations.erase(nations.begin() + n);
@@ -29,8 +44,14 @@ void writeDocument(std::ostream& o, const Document& doc) {
           << quote(n.notes) << "\n";
     for (const City& c : doc.cities)
         o << "city " << quote(c.name) << " " << c.lat << " " << c.lon << " " << c.population << " " << c.nation << " " << c.culture << " "
-          << (c.capital ? 1 : 0) << " " << c.founded << " " << quote(c.notes) << "\n";
+          << (c.capital ? 1 : 0) << " " << c.founded << " " << quote(c.notes) << " " << c.destroyed << "\n";
     o << "era " << doc.era << "\n";
+    o << "years " << doc.currentYear << " " << doc.yearMin << " " << doc.yearMax << "\n";
+    for (const HistEvent& e : doc.events)
+        o << "event " << e.year << " " << (int)e.type << " " << e.lat << " " << e.lon << " " << e.radiusKm << " " << e.strength << " "
+          << quote(e.title) << " " << quote(e.text) << "\n";
+    for (const Article& a : doc.articles)
+        o << "article " << (int)a.kind << " " << (a.pinned ? 1 : 0) << " " << a.lat << " " << a.lon << " " << quote(a.title) << " " << quote(a.body) << "\n";
     for (auto& r : doc.customRoutes) o << "route " << r.first << " " << r.second << "\n";
     // territory, run-length encoded row by row
     if (!doc.owner.empty()) {
@@ -85,10 +106,32 @@ bool readDocumentLine(const std::string& key, std::istringstream& in, const std:
         c.capital = cap != 0;
         size_t p2 = pos + (size_t)r.tellg(); if ((size_t)r.tellg() == std::string::npos) p2 = line.size();
         unquote(line, p2, c.notes);
+        if (p2 < line.size()) { std::istringstream r2(line.substr(p2)); int d; if (r2 >> d) c.destroyed = d; }
         doc.cities.push_back(c);
         return true;
     }
     if (key == "era") { in >> doc.era; return true; }
+    if (key == "years") { in >> doc.currentYear >> doc.yearMin >> doc.yearMax; return true; }
+    if (key == "event") {
+        HistEvent e; int t;
+        in >> e.year >> t >> e.lat >> e.lon >> e.radiusKm >> e.strength;
+        e.type = (EventType)t;
+        size_t pos = (size_t)in.tellg(); if (pos == std::string::npos) return false;
+        if (!unquote(line, pos, e.title)) return false;
+        unquote(line, pos, e.text);
+        doc.events.push_back(e);
+        return true;
+    }
+    if (key == "article") {
+        Article a; int k, pin;
+        in >> k >> pin >> a.lat >> a.lon;
+        a.kind = (LoreKind)k; a.pinned = pin != 0;
+        size_t pos = (size_t)in.tellg(); if (pos == std::string::npos) return false;
+        if (!unquote(line, pos, a.title)) return false;
+        unquote(line, pos, a.body);
+        doc.articles.push_back(a);
+        return true;
+    }
     if (key == "route") { int a, b; if (in >> a >> b) doc.customRoutes.push_back({a, b}); return true; }
     if (key == "owner") {
         const int W = 720, H = 360;

@@ -28,6 +28,22 @@ double World::sample(const std::vector<float>& f, double lat, double lon) {
     return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
 }
 
+double World::sampleCubic(const std::vector<float>& f, double lat, double lon) {
+    if (f.empty()) return 0;
+    double fx = (lon + 180.0) / 360.0 * W - 0.5, fy = (90.0 - lat) / 180.0 * H - 0.5;
+    int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
+    double tx = fx - x0, ty = fy - y0;
+    auto cr = [](double p0, double p1, double p2, double p3, double t) {
+        return p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+    };
+    double col[4];
+    for (int j = 0; j < 4; j++) {
+        int yy = y0 - 1 + j;
+        col[j] = cr(f[idx(x0 - 1, yy)], f[idx(x0, yy)], f[idx(x0 + 1, yy)], f[idx(x0 + 2, yy)], tx);
+    }
+    return cr(col[0], col[1], col[2], col[3], ty);
+}
+
 void World::initGrid(double radius) {
     radiusKm = radius;
     cellDir.resize(W * H);

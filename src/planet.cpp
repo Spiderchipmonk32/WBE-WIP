@@ -50,6 +50,7 @@ void Planet::generate(const PlanetSettings& s) {
     nMoist_.reseed(seed + 505);
     contScale_ = 1.1 / std::max(0.2f, s.continentSize);
     strokes_.clear();
+    eventStrokes_.clear();
     group_ = 0;
     uplift_ = nullptr;
     climT_ = climR_ = nullptr;
@@ -89,7 +90,7 @@ double Planet::baseElevation(const Vec3d& d) const {
     }
     if (uplift_) {
         double lat = std::asin(clampd(d.y, -1, 1)) * 180.0 / kPi, lon = std::atan2(d.x, d.z) * 180.0 / kPi;
-        h += World::sample(*uplift_, lat, lon);
+        h += World::sampleCubic(*uplift_, lat, lon);
     }
     return h;
 }
@@ -129,6 +130,7 @@ double Planet::elevation(const Vec3d& d, int detailOctaves, const std::vector<in
     h += detail(d, h, detailOctaves);
     if (filt) { for (int i : *filt) h = applyStroke(strokes_[i], d, h); }
     else      { for (const Stroke& s : strokes_) h = applyStroke(s, d, h); }
+    for (const Stroke& s : eventStrokes_) h = applyStroke(s, d, h);
     return h;
 }
 
@@ -214,6 +216,8 @@ void Planet::strokesNear(const Vec3d& dir, double angRadius, std::vector<int>& o
 std::vector<Stroke> Planet::strokesCopyNear(const Vec3d& dir, double angRadius) const {
     std::vector<Stroke> out;
     for (const Stroke& s : strokes_)
+        if (angleBetween(dir, s.dir) < angRadius + s.angRadius) out.push_back(s);
+    for (const Stroke& s : eventStrokes_)
         if (angleBetween(dir, s.dir) < angRadius + s.angRadius) out.push_back(s);
     return out;
 }

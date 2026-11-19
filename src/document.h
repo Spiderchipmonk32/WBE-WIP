@@ -35,7 +35,31 @@ struct City {
     int culture = 0;
     bool capital = false;
     int founded = 0;      // year (used by the timeline)
+    int destroyed = 99999;   // year it fell (99999 = still standing)
     std::string notes;
+};
+
+enum class EventType : uint8_t { Note, Meteor, Eruption, Upheaval, Sinking, Founding, Fall, War, Treaty, Disaster, Magic, Count };
+const char* eventTypeName(EventType t);
+bool eventChangesTerrain(EventType t);
+
+struct HistEvent {
+    int year = 0;
+    EventType type = EventType::Note;
+    double lat = 0, lon = 0;
+    double radiusKm = 50;     // size of the effect on the map
+    double strength = 1;      // 0.2 .. 3
+    std::string title, text;
+};
+
+enum class LoreKind : uint8_t { Place, Person, Faction, Religion, Creature, Item, Event, Other, Count };
+const char* loreKindName(LoreKind k);
+
+struct Article {
+    std::string title, body;
+    LoreKind kind = LoreKind::Other;
+    bool pinned = false;      // shown on the map
+    double lat = 0, lon = 0;
 };
 
 struct Document {
@@ -45,6 +69,9 @@ struct Document {
     std::vector<City> cities;
     std::vector<uint16_t> owner;   // per World cell: 0 = unclaimed, otherwise nation index + 1
     int era = 1;                   // Era for trade (see trade.h)
+    int currentYear = 0, yearMin = -3000, yearMax = 3000;
+    std::vector<HistEvent> events;
+    std::vector<Article> articles;
     std::vector<std::pair<int, int>> customRoutes;   // city index pairs
 
     void ensureOwner(int cells) { if ((int)owner.size() != cells) owner.assign(cells, 0); }

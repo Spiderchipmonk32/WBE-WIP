@@ -8,6 +8,8 @@
 #include "persistence.h"
 #include "politics.h"
 #include "trade.h"
+#include "history.h"
+#include <climits>
 #include <vector>
 #include <thread>
 #include <fstream>
@@ -104,6 +106,23 @@ struct App {
     Economy econ;
     size_t econCities = 0;
     int styleUi = 0;
+    int appliedYear = INT_MIN;
+    bool eventsDirty = true;
+    std::vector<Stroke> lastEventStrokes;
+    void applyYear() {
+        if (appliedYear == doc.currentYear && !eventsDirty) return;
+        std::vector<Stroke> st = buildEventStrokes(doc, doc.currentYear, planet.radiusKm());
+        bool same = st.size() == lastEventStrokes.size();
+        for (size_t i = 0; same && i < st.size(); i++)
+            same = st[i].dir.x == lastEventStrokes[i].dir.x && st[i].dir.y == lastEventStrokes[i].dir.y && st[i].radiusKm == lastEventStrokes[i].radiusKm &&
+                   st[i].amount == lastEventStrokes[i].amount && st[i].type == lastEventStrokes[i].type;
+        appliedYear = doc.currentYear; eventsDirty = false;
+        if (same) return;
+        for (auto& s0 : lastEventStrokes) map->invalidate(s0.dir, s0.radiusKm * 1.3);
+        for (auto& s1 : st) map->invalidate(s1.dir, s1.radiusKm * 1.3);
+        planet.setEventStrokes(st);
+        lastEventStrokes = st;
+    }
     void simulateTrade() {
         econ.simulate(world, doc, (Era)std::max(0, std::min(4, doc.era)));
         econCities = doc.cities.size();
@@ -154,6 +173,7 @@ struct App {
         doc.ensureOwner(World::W * World::H);
         labelsDirty = true;
         econ = Economy{};
+        appliedYear = INT_MIN; lastEventStrokes.clear();
         world.selectedFavor.clear();
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
         map->reset();
@@ -176,6 +196,7 @@ struct App {
         doc.ensureOwner(World::W * World::H);
         labelsDirty = true;
         econ = Economy{};
+        appliedYear = INT_MIN; lastEventStrokes.clear();
     }
     // After sculpting or changing the tilt: re-run the climate on the new terrain
     void recalcClimate() {
@@ -196,6 +217,7 @@ int main() {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
     InitWindow(1600, 900, "Worldbuilder");
     SetTargetFPS(144);
+    SetExitKey(KEY_NULL);   // Escape shouldn't close the app (it's used to stop typing)
     GuiSetStyle(DEFAULT, TEXT_SIZE, 18);
 
     App app;
@@ -237,7 +259,13 @@ int main() {
     bool cityNameEdit = false, cityNotesEdit = false, showSites = false, showCities = true, showLabels = true;
     std::vector<std::pair<double, double>> sites;
     int lastNationSel = -2, lastCitySel = -2;
-    bool showRoutes = true;
+    bool showRoutes = true, showEvents = true, showPins = true, typing = false;
+    int eventSel = -1, eventScroll = 0, eventTool = 0, eventTypeUi = (int)EventType::Note, lastEventSel = -2;
+    char evTitleBuf[128] = "", evTextBuf[256] = "";
+    bool evTitleEdit = false, evTextEdit = false;
+    int loreSel = -1, loreScroll = 0, loreTool = 0, lastLoreSel = -2, loreBodyScroll = 0;
+    char loreTitleBuf[128] = "", loreSearchBuf[64] = "";
+    bool loreTitleEdit = false, loreBodyEdit = false, loreSearchEdit = false;
     int goodSel = -1, goodScroll = 0, routeSel = -1, routeScroll = 0, routeTool = 0, routePickA = -1;
     auto randomColor = [](unsigned char& r, unsigned char& g, unsigned char& b) {
         double hue = GetRandomValue(0, 5999) / 1000.0; int hi = (int)hue; double f = hue - hi;
@@ -262,7 +290,33 @@ int main() {
         const int activeTool = sculptTab ? tool : 0;
         const bool paintingTerritory = tab == TabNations && polTool > 0 && nationSel >= 0;
         const bool placingCity = tab == TabCities && cityTool == 1;
-        const bool anyTool = activeTool > 0 || paintingTerritory || placingCity;
+        const bool placingEvent = tab == TabHistory && eventTool == 1;
+        const bool pinningLore = tab == TabLore && loreTool == 1 && loreSel >= 0;
+        const bool anyTool = activeTool > 0 || paintingTerritory || placingCity || placingEvent || pinningLore;
+        app.applyYear();
+        const int year = app.doc.currentYear;
+        // events and lore pins under the mouse
+        int hoverEvent = -1, hoverPin = -1;
+        if (!overPanel) {
+            float best = 10;
+            for (int i = 0; i < (int)app.doc.events.size() && (showEvents || tab == TabHistory); i++) {
+                const HistEvent& e = app.doc.events[i];
+                if (e.year > year) continue;
+                double dl = std::remainder(e.lon - view.centerLon, 360.0);
+                float x = (float)(sw / 2.0 + dl * view.pxPerDeg), y = (float)(sh / 2.0 - (e.lat - view.centerLat) * view.pxPerDeg);
+                float d = std::hypot(x - mouse.x, y - mouse.y);
+                if (d < best) { best = d; hoverEvent = i; }
+            }
+            best = 10;
+            for (int i = 0; i < (int)app.doc.articles.size() && showPins; i++) {
+                const Article& a = app.doc.articles[i];
+                if (!a.pinned) continue;
+                double dl = std::remainder(a.lon - view.centerLon, 360.0);
+                float x = (float)(sw / 2.0 + dl * view.pxPerDeg), y = (float)(sh / 2.0 - (a.lat - view.centerLat) * view.pxPerDeg);
+                float d = std::hypot(x - mouse.x, y - mouse.y);
+                if (d < best) { best = d; hoverPin = i; }
+            }
+        }
         app.updateLabels();
         if (app.econ.valid && app.doc.cities.size() != app.econCities) app.econ.valid = false;
         const bool pickingRoute = tab == TabTrade && routeTool == 1;
@@ -301,6 +355,10 @@ int main() {
                 else setStatus("No way to get there in this era");
                 routePickA = -1;
             }
+        } else if (!overPanel && !anyTool && hoverPin >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            loreSel = hoverPin; clickedCity = true; tab = TabLore;
+        } else if (!overPanel && !anyTool && hoverEvent >= 0 && hoverCity < 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            eventSel = hoverEvent; clickedCity = true; tab = TabHistory;
         } else if (!overPanel && !anyTool && hoverCity >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             citySel = hoverCity; clickedCity = true;
             if (tab != TabCities && tab != TabTrade) tab = TabCities;
@@ -315,7 +373,7 @@ int main() {
             view.centerLon -= md.x / view.pxPerDeg;
             view.centerLat += md.y / view.pxPerDeg;
         }
-        if (!seedEdit) {
+        if (!typing) {
             double k = 600.0 * dt / view.pxPerDeg;
             if (IsKeyDown(KEY_W)) view.centerLat += k;
             if (IsKeyDown(KEY_S)) view.centerLat -= k;
@@ -386,11 +444,25 @@ int main() {
             app.doc.cities.push_back(c);
             citySel = (int)app.doc.cities.size() - 1;
         }
+        if (placingEvent && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            HistEvent e; e.type = (EventType)eventTypeUi; e.year = year; e.lat = mLat; e.lon = mLon;
+            e.radiusKm = e.type == EventType::Meteor ? 25 : (e.type == EventType::Eruption ? 30 : (eventChangesTerrain(e.type) ? 120 : 50));
+            e.title = eventTypeName(e.type);
+            app.doc.events.push_back(e);
+            eventSel = (int)app.doc.events.size() - 1;
+            app.eventsDirty = true;
+            eventTool = 0;
+        }
+        if (pinningLore && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            Article& a = app.doc.articles[loreSel];
+            a.lat = mLat; a.lon = mLon; a.pinned = true;
+            loreTool = 0;
+        }
         auto doUndo = [&]() {
             for (auto& a : app.planet.undo()) map.invalidate(a.first, a.second * 1.1);
             app.stats = app.planet.computeStats();
         };
-        if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && IsKeyPressed(KEY_Z)) doUndo();
+        if (!typing && (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && IsKeyPressed(KEY_Z)) doUndo();
 
         map.update(view, sw, sh);
 
@@ -472,6 +544,16 @@ int main() {
             bool fantasy = map.style() == MapStyle::Fantasy;
             for (int i = 0; i < (int)app.doc.cities.size(); i++) {
                 const City& c = app.doc.cities[i];
+                if (!cityExists(c, year)) {
+                    if (cityRuined(c, year) && view.pxPerDeg >= 10) {
+                        Vector2 p = toScreen(c.lat, c.lon);
+                        if (p.x < panel.x + panel.width || p.x > sw || p.y < 0 || p.y > sh) continue;
+                        DrawLineEx({p.x - 4, p.y - 4}, {p.x + 4, p.y + 4}, 2, DARKGRAY);
+                        DrawLineEx({p.x - 4, p.y + 4}, {p.x + 4, p.y - 4}, 2, DARKGRAY);
+                        if (showLabels && view.pxPerDeg >= 30) DrawText((c.name + " (ruins)").c_str(), (int)p.x + 8, (int)p.y - 7, 14, DARKGRAY);
+                    }
+                    continue;
+                }
                 // show bigger places first as you zoom in
                 double need = c.capital ? 3.0 : (c.population > 500000 ? 8 : (c.population > 100000 ? 14 : (c.population > 20000 ? 24 : 40)));
                 if (view.pxPerDeg < need && i != citySel) continue;
@@ -489,6 +571,40 @@ int main() {
                     int fsz = c.capital ? 18 : (c.population > 100000 ? 16 : 14);
                     if (!fantasy) DrawText(c.name.c_str(), (int)p.x + 9, (int)p.y - 7, fsz, BLACK);
                     DrawText(c.name.c_str(), (int)p.x + 8, (int)p.y - 8, fsz, fantasy ? Color{60, 40, 25, 255} : RAYWHITE);
+                }
+            }
+        }
+        if (showEvents || tab == TabHistory) {
+            for (int i = 0; i < (int)app.doc.events.size(); i++) {
+                const HistEvent& e = app.doc.events[i];
+                if (e.year > year) continue;
+                Vector2 p = toScreen(e.lat, e.lon);
+                if (p.x < panel.x + panel.width || p.x > sw || p.y < 0 || p.y > sh) continue;
+                static const Color col[] = {{120, 120, 120, 255}, {255, 140, 0, 255}, {220, 50, 30, 255}, {150, 100, 50, 255}, {40, 80, 160, 255},
+                                            {40, 170, 70, 255}, {40, 40, 40, 255}, {200, 20, 20, 255}, {40, 120, 220, 255}, {140, 60, 160, 255}, {170, 80, 255, 255}};
+                static const char* sym[] = {"i", "*", "^", "+", "-", "F", "x", "!", "T", "~", "M"};
+                int t = std::min((int)e.type, 10);
+                bool recent = year - e.year < 50;
+                DrawCircleV(p, 9, recent ? WHITE : Fade(WHITE, 0.6f));
+                DrawCircleV(p, 7.5f, recent ? col[t] : Fade(col[t], 0.55f));
+                DrawText(sym[t], (int)p.x - MeasureText(sym[t], 14) / 2, (int)p.y - 7, 14, WHITE);
+                if (i == eventSel) DrawCircleLines((int)p.x, (int)p.y, 13, YELLOW);
+            }
+        }
+        if (showPins) {
+            for (int i = 0; i < (int)app.doc.articles.size(); i++) {
+                const Article& a = app.doc.articles[i];
+                if (!a.pinned) continue;
+                Vector2 p = toScreen(a.lat, a.lon);
+                if (p.x < panel.x + panel.width || p.x > sw || p.y < 0 || p.y > sh) continue;
+                DrawRectangle((int)p.x - 6, (int)p.y - 8, 12, 15, Color{110, 60, 30, 255});
+                DrawRectangle((int)p.x - 4, (int)p.y - 6, 9, 11, Color{240, 225, 190, 255});
+                DrawLine((int)p.x - 2, (int)p.y - 3, (int)p.x + 3, (int)p.y - 3, Color{110, 60, 30, 255});
+                DrawLine((int)p.x - 2, (int)p.y, (int)p.x + 3, (int)p.y, Color{110, 60, 30, 255});
+                if (i == loreSel) DrawCircleLines((int)p.x, (int)p.y, 13, YELLOW);
+                if (showLabels && view.pxPerDeg >= 10) {
+                    DrawText(a.title.c_str(), (int)p.x + 10, (int)p.y - 6, 15, BLACK);
+                    DrawText(a.title.c_str(), (int)p.x + 9, (int)p.y - 7, 15, Color{255, 235, 190, 255});
                 }
             }
         }
@@ -613,6 +729,8 @@ int main() {
             L.y += 210;
             L.check("City markers", &showCities);
             L.check("Names and labels", &showLabels);
+            L.check("History events", &showEvents);
+            L.check("Lore pins", &showPins);
             // legend
             if (overlayUi == 1) {
                 L.legend(Color{200, 30, 30, 255}, "Converging (mountains, trenches)");
@@ -921,9 +1039,149 @@ int main() {
                     app.econ.routes.erase(std::remove_if(app.econ.routes.begin(), app.econ.routes.end(), [](const TradeRoute& r) { return r.custom; }), app.econ.routes.end());
                 }
             }
-        } else if (tab >= TabHistory && tab <= TabLore) {
-            L.heading("COMING SOON");
-            L.note("This part of the world builder is still being built. See PROGRESS.md in the project for what's done.");
+        } else if (tab == TabHistory) {
+            L.heading("TIMELINE");
+            float yUi = (float)app.doc.currentYear;
+            L.label(TextFormat("Year: %d", app.doc.currentYear)); L.slider(&yUi, (float)app.doc.yearMin, (float)app.doc.yearMax);
+            app.doc.currentYear = (int)std::round(yUi);
+            {
+                float bw4 = (L.w - 12) / 4;
+                const char* lbl[4] = {"-100", "-10", "+10", "+100"};
+                int dlt[4] = {-100, -10, 10, 100};
+                for (int k = 0; k < 4; k++)
+                    if (GuiButton(Rectangle{L.x + k * (bw4 + 4), L.y, bw4, 26}, lbl[k]))
+                        app.doc.currentYear = std::max(app.doc.yearMin, std::min(app.doc.yearMax, app.doc.currentYear + dlt[k]));
+                L.y += 34;
+            }
+            L.note("The map shows the world in this year: terrain events, cities founded and fallen.");
+            if (L.button("Generate a history")) {
+                generateHistory(app.doc, app.world, (uint32_t)app.ui.seed + 99u);
+                app.eventsDirty = true; eventSel = -1;
+                setStatus(TextFormat("Created %zu events", app.doc.events.size()));
+            }
+            L.heading("EVENTS");
+            std::string items;
+            for (auto& e : app.doc.events) { if (!items.empty()) items += ";"; items += TextFormat("%d: ", e.year); items += cleanList(e.title); }
+            GuiListView(Rectangle{L.x, L.y, L.w, 140}, items.c_str(), &eventScroll, &eventSel);
+            L.y += 148;
+            if (eventSel >= (int)app.doc.events.size()) eventSel = -1;
+            GuiComboBox(Rectangle{L.x, L.y, L.w * 0.55f, 28}, "Note;Meteor impact;Volcanic eruption;Upheaval;Sinking;Founding;Fall;War;Treaty;Disaster;Magical event", &eventTypeUi);
+            if (GuiButton(Rectangle{L.x + L.w * 0.55f + 6, L.y, L.w * 0.45f - 6, 28}, eventTool == 1 ? "Click the map..." : "Place on map")) eventTool = 1;
+            L.y += 34;
+            if (eventTool == 1) L.note("Click the map to place the event in the current year.");
+            if (eventSel != lastEventSel) {
+                lastEventSel = eventSel; evTitleEdit = evTextEdit = false;
+                if (eventSel >= 0) {
+                    std::strncpy(evTitleBuf, app.doc.events[eventSel].title.c_str(), 127);
+                    std::strncpy(evTextBuf, app.doc.events[eventSel].text.c_str(), 255);
+                }
+            }
+            if (eventSel >= 0) {
+                HistEvent& e = app.doc.events[eventSel];
+                L.label(TextFormat("%s in year %d", eventTypeName(e.type), e.year));
+                if (GuiTextBox(Rectangle{L.x, L.y, L.w, 28}, evTitleBuf, 127, evTitleEdit)) evTitleEdit = !evTitleEdit;
+                e.title = evTitleBuf; L.y += 34;
+                if (GuiTextBox(Rectangle{L.x, L.y, L.w, 28}, evTextBuf, 255, evTextEdit)) evTextEdit = !evTextEdit;
+                e.text = evTextBuf; L.y += 34;
+                {
+                    float bw4 = (L.w - 12) / 4;
+                    const char* lbl[4] = {"Year -10", "-1", "+1", "+10"};
+                    int dlt[4] = {-10, -1, 1, 10};
+                    for (int k = 0; k < 4; k++)
+                        if (GuiButton(Rectangle{L.x + k * (bw4 + 4), L.y, bw4, 26}, lbl[k])) { e.year += dlt[k]; app.eventsDirty = true; }
+                    L.y += 32;
+                }
+                if (eventChangesTerrain(e.type)) {
+                    float rT = (float)std::log10(std::max(0.5, e.radiusKm));
+                    L.label(TextFormat("Size: %s", formatKm(e.radiusKm))); L.slider(&rT, -0.3f, 3);
+                    double nr = std::pow(10.0, (double)rT);
+                    float st = (float)e.strength;
+                    L.label(TextFormat("Strength: %.1f", e.strength)); L.slider(&st, 0.2f, 3);
+                    if (std::fabs(nr - e.radiusKm) > 1e-6 || std::fabs(st - e.strength) > 1e-6) { e.radiusKm = nr; e.strength = st; app.eventsDirty = true; }
+                }
+                float bw2 = (L.w - 8) / 2;
+                if (GuiButton(Rectangle{L.x, L.y, bw2, 28}, "Go to")) { view.centerLat = e.lat; view.centerLon = e.lon; view.pxPerDeg = std::max(view.pxPerDeg, 30.0); }
+                if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, "Delete event")) { app.doc.events.erase(app.doc.events.begin() + eventSel); eventSel = -1; app.eventsDirty = true; }
+                L.y += 36;
+            }
+            if (L.button("Update climate and rivers for this year")) app.recalcClimate();
+        } else if (tab == TabLore) {
+            L.heading("LORE");
+            GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Search");
+            if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60, 28}, loreSearchBuf, 63, loreSearchEdit)) loreSearchEdit = !loreSearchEdit;
+            L.y += 34;
+            std::string q = loreSearchBuf;
+            for (char& ch : q) ch = (char)std::tolower((unsigned char)ch);
+            std::vector<int> shown;
+            std::string items;
+            for (int i = 0; i < (int)app.doc.articles.size(); i++) {
+                const Article& a = app.doc.articles[i];
+                std::string t = a.title + " " + a.body;
+                for (char& ch : t) ch = (char)std::tolower((unsigned char)ch);
+                if (!q.empty() && t.find(q) == std::string::npos) continue;
+                shown.push_back(i);
+                if (!items.empty()) items += ";";
+                items += cleanList(a.title.empty() ? std::string("(untitled)") : a.title) + "  [" + loreKindName(a.kind) + "]";
+            }
+            int row = -1;
+            for (size_t k = 0; k < shown.size(); k++) if (shown[k] == loreSel) row = (int)k;
+            int prevRow = row;
+            GuiListView(Rectangle{L.x, L.y, L.w, 130}, items.c_str(), &loreScroll, &row);
+            L.y += 138;
+            if (row != prevRow) loreSel = row >= 0 && row < (int)shown.size() ? shown[row] : -1;
+            float bw2 = (L.w - 8) / 2;
+            if (GuiButton(Rectangle{L.x, L.y, bw2, 28}, "New article")) {
+                Article a; a.title = "New article";
+                app.doc.articles.push_back(a);
+                loreSel = (int)app.doc.articles.size() - 1;
+            }
+            if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, "Delete article") && loreSel >= 0) {
+                app.doc.articles.erase(app.doc.articles.begin() + loreSel); loreSel = -1;
+            }
+            L.y += 36;
+            if (loreSel >= (int)app.doc.articles.size()) loreSel = -1;
+            if (loreSel != lastLoreSel) {
+                lastLoreSel = loreSel; loreTitleEdit = loreBodyEdit = false; loreBodyScroll = 0;
+                if (loreSel >= 0) std::strncpy(loreTitleBuf, app.doc.articles[loreSel].title.c_str(), 127);
+            }
+            if (loreSel >= 0) {
+                Article& a = app.doc.articles[loreSel];
+                if (GuiTextBox(Rectangle{L.x, L.y, L.w, 28}, loreTitleBuf, 127, loreTitleEdit)) loreTitleEdit = !loreTitleEdit;
+                a.title = loreTitleBuf; L.y += 34;
+                int kind = (int)a.kind;
+                GuiComboBox(Rectangle{L.x, L.y, bw2, 28}, "Place;Person;Faction;Religion;Creature;Item;Event;Other", &kind);
+                a.kind = (LoreKind)kind;
+                if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, a.pinned ? "Move map pin" : "Pin to map")) loreTool = 1;
+                L.y += 34;
+                if (loreTool == 1) L.note("Click the map where this belongs.");
+                float bodyH = std::max(120.f, panel.y + panel.height - L.y - 90);
+                textArea(Rectangle{L.x, L.y, L.w, bodyH}, a.body, loreBodyEdit, loreBodyScroll);
+                L.y += bodyH + 6;
+                // [[links]] to other articles
+                std::vector<std::string> links;
+                size_t p0 = 0;
+                while ((p0 = a.body.find("[[", p0)) != std::string::npos) {
+                    size_t p1 = a.body.find("]]", p0 + 2);
+                    if (p1 == std::string::npos) break;
+                    links.push_back(a.body.substr(p0 + 2, p1 - p0 - 2));
+                    p0 = p1 + 2;
+                }
+                float lx = L.x;
+                for (size_t k = 0; k < links.size() && k < 6; k++) {
+                    float wbtn = (float)MeasureText(links[k].c_str(), 16) + 16;
+                    if (lx + wbtn > L.x + L.w) break;
+                    if (GuiButton(Rectangle{lx, L.y, wbtn, 24}, links[k].c_str())) {
+                        int found = -1;
+                        for (int i = 0; i < (int)app.doc.articles.size(); i++) if (app.doc.articles[i].title == links[k]) found = i;
+                        if (found < 0) { Article na; na.title = links[k]; app.doc.articles.push_back(na); found = (int)app.doc.articles.size() - 1; }
+                        loreSel = found;
+                    }
+                    lx += wbtn + 6;
+                }
+                if (links.empty()) L.note("Tip: write [[Another Article]] to link to it.");
+            } else {
+                L.note("Write articles about places, people, factions, religions, creatures and items. Pin them to the map, and link them with [[Title]].");
+            }
         } else if (tab == 2) {
             L.heading("SCULPT");
             GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Pan;Raise;Lower\nSmooth;Flatten", &tool);
@@ -981,6 +1239,18 @@ int main() {
             DrawRectangle(sw - tw - 30, sh - bh - 10, tw + 20, bh, Fade(BLACK, 0.6f));
             for (int i = 0; i < 6; i++) DrawText(lines[i].c_str(), sw - tw - 20, sh - bh - 3 + i * 22, fs, RAYWHITE);
         }
+        if ((hoverEvent >= 0 || hoverPin >= 0) && hoverCity < 0 && hoverDeposit < 0) {
+            std::string t1, t2;
+            if (hoverPin >= 0) { const Article& a = app.doc.articles[hoverPin]; t1 = a.title; t2 = std::string(loreKindName(a.kind)) + " - click to read"; }
+            else { const HistEvent& e = app.doc.events[hoverEvent]; t1 = TextFormat("%s (%d)", e.title.c_str(), e.year); t2 = e.text; }
+            if (t2.size() > 80) t2 = t2.substr(0, 77) + "...";
+            int tw = std::max(MeasureText(t1.c_str(), 18), MeasureText(t2.c_str(), 16));
+            int bx = (int)mouse.x + 16, by = (int)mouse.y + 10;
+            if (bx + tw + 20 > sw) bx = (int)mouse.x - tw - 36;
+            DrawRectangle(bx, by, tw + 20, 52, Fade(BLACK, 0.8f));
+            DrawText(t1.c_str(), bx + 10, by + 6, 18, YELLOW);
+            DrawText(t2.c_str(), bx + 10, by + 28, 16, RAYWHITE);
+        }
         if (hoverCity >= 0 && hoverDeposit < 0) {
             const City& c = app.doc.cities[hoverCity];
             std::string t1 = c.name + (c.capital ? " (capital)" : "");
@@ -1021,6 +1291,8 @@ int main() {
         }
         DrawText("Scroll: zoom   Right/middle-drag or WASD: move", (int)(panel.x + panel.width) + 24, sh - 28, 16, Fade(th.text, 0.8f));
         EndDrawing();
+        typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
+                 loreTitleEdit || loreBodyEdit || loreSearchEdit;
 
         // ---- Exports (after the frame, so the message above is visible while it works) ----
         static int exportFrames = 0;

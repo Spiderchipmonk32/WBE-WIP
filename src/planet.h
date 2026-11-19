@@ -58,6 +58,9 @@ public:
     std::vector<Stroke> strokesCopyNear(const Vec3d& dir, double angRadius) const;
     size_t strokeCount() const { return strokes_.size(); }
     const std::vector<Stroke>& strokes() const { return strokes_; }
+    // Terrain changes from history events active in the current year (applied after sculpting)
+    void setEventStrokes(const std::vector<Stroke>& s) { eventStrokes_ = s; }
+    std::vector<Stroke> allStrokes() const { std::vector<Stroke> a = strokes_; a.insert(a.end(), eventStrokes_.begin(), eventStrokes_.end()); return a; }
     void setStrokes(const std::vector<Stroke>& s);   // restore sculpting from a save file
 
     PlanetStats computeStats() const;
@@ -80,6 +83,7 @@ private:
     Simplex3 nCont_, nMtn_, nSmall_, nWarp_, nDetail_, nMoist_;
     double sea_ = 0, hi_ = 1, lo_ = -1, contScale_ = 1.1;
     std::vector<Stroke> strokes_;
+    std::vector<Stroke> eventStrokes_;
     const std::vector<float>* uplift_ = nullptr;
     const std::vector<float>* climT_ = nullptr;
     const std::vector<float>* climR_ = nullptr;

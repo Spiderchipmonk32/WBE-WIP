@@ -61,6 +61,8 @@ public:
     double cellKm() const { return radiusKm * kPi / H; }   // north-south size of a cell
     // Bilinear sample of a float field (wraps east-west)
     static double sample(const std::vector<float>& f, double lat, double lon);
+    // Smoother (Catmull-Rom) sampling, for fields whose slopes get shaded (no grid seams)
+    static double sampleCubic(const std::vector<float>& f, double lat, double lon);
     static int nearestCell(double lat, double lon) { int x, y; cellOf(lat, lon, x, y); return idx(x, y); }
 
     // ---- tectonics (tectonics.cpp) ----

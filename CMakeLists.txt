@@ -43,6 +43,7 @@ add_executable(Worldbuilder
   src/names.cpp
   src/politics.cpp
   src/trade.cpp
+  src/history.cpp
   src/raygui_impl.c)
 target_include_directories(Worldbuilder PRIVATE src ${raygui_SOURCE_DIR}/src)
 find_package(Threads REQUIRED)
