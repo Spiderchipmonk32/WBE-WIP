@@ -73,6 +73,22 @@ struct Article {
     double lat = 0, lon = 0;
 };
 
+// City editor data. The street layout is rebuilt from the seed; what the user adds or changes is stored.
+enum class District : uint8_t { None, Market, OldTown, Noble, Temple, Residential, Docks, Industry, Farms, Slums, Park, Count };
+const char* districtName(District d);
+enum class LandmarkType : uint8_t { Market, Castle, Palace, Temple, Harbour, Gate, Guildhall, University, Tower, Monument, Inn, Other, Count };
+const char* landmarkName(LandmarkType t);
+struct Landmark { LandmarkType type = LandmarkType::Other; double x = 0, y = 0; std::string name; };   // metres east/north of the centre
+struct CityPlan {
+    int city = -1;
+    uint32_t seed = 1;
+    bool walls = true;
+    std::vector<Landmark> landmarks;
+    std::vector<std::vector<std::pair<float, float>>> extraRoads;   // user-drawn roads (metres)
+    std::vector<std::pair<int, uint8_t>> districtEdits;              // painted cells
+    bool landmarksMade = false;
+};
+
 struct Document {
     int version = 1;
     std::vector<Culture> cultures;
@@ -85,6 +101,8 @@ struct Document {
     std::vector<Article> articles;
     std::vector<Religion> religions;
     std::vector<uint8_t> faith;    // per World cell: 0 = none, otherwise religion index + 1
+    std::vector<CityPlan> plans;
+    CityPlan* planFor(int city) { for (auto& p : plans) if (p.city == city) return &p; return nullptr; }
     std::vector<std::pair<int, int>> customRoutes;   // city index pairs
 
     void ensureOwner(int cells) {
@@ -106,6 +124,9 @@ struct Document {
             keep.push_back({r.first > c ? r.first - 1 : r.first, r.second > c ? r.second - 1 : r.second});
         }
         customRoutes.swap(keep);
+        std::vector<CityPlan> kp;
+        for (auto& p : plans) { if (p.city == c) continue; if (p.city > c) p.city--; kp.push_back(p); }
+        plans.swap(kp);
     }
     int nationAt(int cell) const { return cell >= 0 && cell < (int)owner.size() ? (int)owner[cell] - 1 : -1; }
 };

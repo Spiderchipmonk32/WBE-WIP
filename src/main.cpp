@@ -10,6 +10,7 @@
 #include "trade.h"
 #include "history.h"
 #include "extras.h"
+#include "cityeditor.h"
 #include <climits>
 #include <vector>
 #include <thread>
@@ -222,6 +223,7 @@ int main() {
     GuiSetStyle(DEFAULT, TEXT_SIZE, 18);
 
     App app;
+    CityEditor cityEd;
     TileMap map(&app.planet);
     app.map = &map;
     map.setWorld(&app.world);
@@ -291,6 +293,10 @@ int main() {
     float brushT = 0.80f, strengthT = 0.851f;
 
     while (!WindowShouldClose()) {
+        if (cityEd.active) {   // the city editor takes over the whole screen
+            cityEd.frame(app.planet, app.world, app.doc);
+            continue;
+        }
         const float dt = GetFrameTime();
         const int sw = GetScreenWidth(), sh = GetScreenHeight();
         const double R = app.planet.radiusKm();
@@ -1169,6 +1175,7 @@ int main() {
                 c.notes = cityNotesBuf;
                 L.y += 34;
                 float bw2 = (L.w - 8) / 2;
+                if (L.button("Open city editor", 32)) { map.waitIdle(); cityEd.open(citySel, app.planet, app.world, app.doc); }
                 if (GuiButton(Rectangle{L.x, L.y, bw2, 28}, "Go to city")) { view.centerLat = c.lat; view.centerLon = c.lon; view.pxPerDeg = std::max(view.pxPerDeg, 40.0); }
                 if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, "Delete city")) { app.doc.removeCity(citySel); citySel = -1; }
                 L.y += 36;
@@ -1702,6 +1709,7 @@ int main() {
         }
     }
 
+    cityEd.close();
     map.shutdown();
     CloseWindow();
     return 0;

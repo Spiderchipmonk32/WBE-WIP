@@ -15,6 +15,14 @@ const char* eventTypeName(EventType t) {
 bool eventChangesTerrain(EventType t) {
     return t == EventType::Meteor || t == EventType::Eruption || t == EventType::Upheaval || t == EventType::Sinking || t == EventType::Magic;
 }
+const char* districtName(District d) {
+    static const char* n[] = {"None", "Market", "Old town", "Noble quarter", "Temple district", "Residential", "Docks", "Industry", "Farms", "Slums", "Park"};
+    int i = (int)d; return i >= 0 && i < (int)District::Count ? n[i] : "?";
+}
+const char* landmarkName(LandmarkType t) {
+    static const char* n[] = {"Market", "Castle", "Palace", "Temple", "Harbour", "Gate", "Guildhall", "University", "Tower", "Monument", "Inn", "Other"};
+    int i = (int)t; return i >= 0 && i < (int)LandmarkType::Count ? n[i] : "?";
+}
 const char* loreKindName(LoreKind k) {
     static const char* n[] = {"Place", "Person", "Faction", "Religion", "Creature", "Item", "Event", "Other"};
     int i = (int)k;
@@ -58,6 +66,16 @@ void writeDocument(std::ostream& o, const Document& doc) {
     for (const Article& a : doc.articles)
         o << "article " << (int)a.kind << " " << (a.pinned ? 1 : 0) << " " << a.lat << " " << a.lon << " " << quote(a.title) << " " << quote(a.body) << "\n";
     for (auto& r : doc.customRoutes) o << "route " << r.first << " " << r.second << "\n";
+    for (const CityPlan& p : doc.plans) {
+        o << "cityplan " << p.city << " " << p.seed << " " << (p.walls ? 1 : 0) << " " << (p.landmarksMade ? 1 : 0) << "\n";
+        for (const Landmark& l : p.landmarks) o << "landmark " << p.city << " " << (int)l.type << " " << l.x << " " << l.y << " " << quote(l.name) << "\n";
+        for (const auto& r : p.extraRoads) {
+            o << "cityroad " << p.city << " " << r.size();
+            for (auto& pt : r) o << " " << pt.first << " " << pt.second;
+            o << "\n";
+        }
+        for (const auto& e : p.districtEdits) o << "citydistrict " << p.city << " " << e.first << " " << (int)e.second << "\n";
+    }
     // faith, run-length encoded like territory
     if (!doc.faith.empty() && !doc.religions.empty()) {
         const int W = 720, H = (int)doc.faith.size() / W;
@@ -135,6 +153,29 @@ bool readDocumentLine(const std::string& key, std::istringstream& in, const std:
         return true;
     }
     if (key == "era") { in >> doc.era; return true; }
+    if (key == "cityplan") {
+        CityPlan p; int w, lm; in >> p.city >> p.seed >> w >> lm; p.walls = w != 0; p.landmarksMade = lm != 0;
+        doc.plans.push_back(p); return true;
+    }
+    if (key == "landmark" || key == "cityroad" || key == "citydistrict") {
+        int c; in >> c;
+        CityPlan* p = doc.planFor(c);
+        if (!p) return false;
+        if (key == "landmark") {
+            Landmark l; int t; in >> t >> l.x >> l.y; l.type = (LandmarkType)t;
+            size_t pos = (size_t)in.tellg(); if (pos == std::string::npos) return false;
+            unquote(line, pos, l.name);
+            p->landmarks.push_back(l);
+        } else if (key == "cityroad") {
+            size_t n; in >> n;
+            std::vector<std::pair<float, float>> r;
+            for (size_t k = 0; k < n; k++) { float x, y; if (in >> x >> y) r.push_back({x, y}); }
+            if (r.size() >= 2) p->extraRoads.push_back(r);
+        } else {
+            int idx, d; in >> idx >> d; p->districtEdits.push_back({idx, (uint8_t)d});
+        }
+        return true;
+    }
     if (key == "ruler") {
         int n; Ruler r; in >> n >> r.start >> r.end;
         size_t pos = (size_t)in.tellg(); if (pos == std::string::npos) return false;

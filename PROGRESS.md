@@ -5,6 +5,20 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### City editor (Cities tab → select a city → Open city editor)
+- A separate screen for one city, showing its **real local terrain** in high detail: coastline,
+  rivers (at their true width), lakes and hills, all taken from the world.
+- A generated **street plan** sized to the population: main roads that bend around water and bridge
+  rivers, side streets and alleys (denser towards the centre), and **city walls** with gates for
+  pre-industrial eras.
+- **Districts**: market, old town, noble quarter, temple district, docks (industry in later eras),
+  residential, slums outside the walls, farms, parks.
+- **Buildings** (up to ~30,000 for a big city) along the streets, sized and coloured by district.
+- **Landmarks** named automatically: market, castle or royal palace (capital), great temple of the
+  local religion, harbour, gates by compass direction, guildhall, university, an inn.
+- **Edit it**: paint districts with a brush, draw your own roads, add, move, rename or delete
+  landmarks, toggle walls, or roll a new street layout. All changes are saved with the world.
+
 ### Statistics, hex grid and help
 - **World statistics** (World tab button): land, heights, counts of everything, a chart of land by
   biome, and the largest nations by population and area.
