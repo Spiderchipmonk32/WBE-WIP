@@ -352,6 +352,118 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
             p[0] = u8(col.r); p[1] = u8(col.g); p[2] = u8(col.b); p[3] = 255;
         }
     }
+    // ---- Fantasy map symbols: inked mountains, hills and trees ----
+    if (j.style == MapStyle::Fantasy && j.level <= 7) {
+        const int S = 22;   // spacing between symbols, in pixels
+        auto px = [&](int x, int y, RGB c, double a) {
+            if (x < 0 || y < 0 || x >= N || y >= N) return;
+            unsigned char* p = &out[(y * N + x) * 4];
+            p[0] = u8(p[0] + (c.r - p[0]) * a); p[1] = u8(p[1] + (c.g - p[1]) * a); p[2] = u8(p[2] + (c.b - p[2]) * a);
+        };
+        auto line = [&](double x0, double y0, double x1, double y1, RGB c, double a) {
+            int n = (int)std::ceil(std::max(std::fabs(x1 - x0), std::fabs(y1 - y0))) + 1;
+            for (int k = 0; k <= n; k++) { double t = (double)k / n; px((int)std::lround(x0 + (x1 - x0) * t), (int)std::lround(y0 + (y1 - y0) * t), c, a); }
+        };
+        auto tri = [&](double ax, double ay, double bx, double by, double cx, double cy, RGB c, double a) {
+            int y0 = (int)std::floor(std::min({ay, by, cy})), y1 = (int)std::ceil(std::max({ay, by, cy}));
+            for (int y = std::max(0, y0); y <= std::min(N - 1, y1); y++) {
+                double yy = y + 0.5, xs[3]; int n = 0;
+                auto edge = [&](double x1_, double y1_, double x2_, double y2_) {
+                    if ((yy >= y1_ && yy < y2_) || (yy >= y2_ && yy < y1_)) xs[n++] = x1_ + (yy - y1_) * (x2_ - x1_) / (y2_ - y1_);
+                };
+                edge(ax, ay, bx, by); edge(bx, by, cx, cy); edge(cx, cy, ax, ay);
+                if (n < 2) continue;
+                double l = std::min(xs[0], xs[1]), r = std::max(xs[0], xs[1]);
+                for (int x = std::max(0, (int)std::ceil(l - 0.5)); x <= std::min(N - 1, (int)std::floor(r - 0.5)); x++) px(x, y, c, a);
+            }
+        };
+        auto circle = [&](double cx, double cy, double r, RGB fill, RGB ink) {
+            for (int y = (int)(cy - r - 1); y <= (int)(cy + r + 1); y++)
+                for (int x = (int)(cx - r - 1); x <= (int)(cx + r + 1); x++) {
+                    double d = std::hypot(x + 0.5 - cx, y + 0.5 - cy);
+                    if (d <= r - 0.7) px(x, y, fill, 0.95);
+                    else if (d <= r + 0.3) px(x, y, ink, 0.9);
+                }
+        };
+        const RGB ink{58, 40, 26}, lit{246, 236, 206}, shade{196, 174, 132}, snow{252, 252, 248}, leaf{140, 158, 96}, conifer{102, 128, 84};
+        struct Sym { double x, y, h; int kind; uint32_t hash; };
+        std::vector<Sym> syms;
+        int gx0 = j.tx * N, gy0 = j.ty * N;
+        int c0x = (int)std::floor((gx0 - S * 2.0) / S), c1x = (int)std::floor((gx0 + N + S * 2.0) / S);
+        int c0y = (int)std::floor((gy0 - S * 2.0) / S), c1y = (int)std::floor((gy0 + N + S * 2.0) / S);
+        const int worldPx = (4 << j.level) * N;
+        for (int cy = c0y; cy <= c1y; cy++)
+            for (int cx = c0x; cx <= c1x; cx++) {
+                uint32_t hsh = (uint32_t)(cx * 73856093) ^ (uint32_t)(cy * 19349663) ^ (uint32_t)(j.level * 83492791);
+                hsh = hsh * 2654435761u; hsh ^= hsh >> 15;
+                double jx = 0.2 + 0.6 * ((hsh & 255) / 255.0), jy = 0.2 + 0.6 * (((hsh >> 8) & 255) / 255.0);
+                double sx = (cx + jx) * S, sy = (cy + jy) * S;   // global pixels at this level
+                double lat = 90 - sy / ((2 << j.level) * N) * 180.0;
+                if (lat < -84 || lat > 84) continue;
+                double wx = std::fmod(sx, (double)worldPx); if (wx < 0) wx += worldPx;
+                double lon = -180 + wx / worldPx * 360.0;
+                double hh = planet_->elevationWith(dirFromLatLon(lat, lon), std::max(1, oct - 2), j.strokes);
+                if (hh <= 30) continue;
+                if (world_ && !world_->lakeMask.empty() && World::sample(world_->lakeMask, lat, lon) > 0.3) continue;
+                // local relief: mountains mark rugged ground, not just high plateaus
+                double dd = S * 0.8 / ((2 << j.level) * N) * 180.0;
+                double relief = 0;
+                for (int k = 0; k < 4; k++) {
+                    double la2 = lat + (k == 0 ? dd : k == 1 ? -dd : 0), lo2 = lon + (k == 2 ? dd : k == 3 ? -dd : 0) / std::max(0.2, std::cos(lat * kPi / 180));
+                    relief = std::max(relief, std::fabs(planet_->elevationWith(dirFromLatLon(la2, lo2), std::max(1, oct - 2), j.strokes) - hh));
+                }
+                double thr = clampd(spacingKm * S * 10, 200, 900);
+                int kind = -1;
+                double keep = clampd((relief / thr - 1) * 0.5 + 0.3, 0.2, 0.75);   // a map-maker draws fewer, bigger peaks
+                if (hh > 1200 && relief > thr && ((hsh >> 20) & 1023) / 1023.0 < keep) kind = 0;   // mountain
+                else if ((hh > 700 || relief > thr * 0.6) && ((hsh >> 16) & 3) == 0) kind = 1;  // hill
+                else if (world_ && !world_->biome.empty()) {
+                    Biome b = (Biome)world_->biome[World::nearestCell(lat, lon)];
+                    bool forest = b == Biome::TemperateForest || b == Biome::TemperateRainforest || b == Biome::TropicalRainforest ||
+                                  b == Biome::TropicalSeasonalForest;
+                    if (forest && ((hsh >> 18) & 3) != 0) kind = 2;
+                    else if (b == Biome::BorealForest && ((hsh >> 18) & 3) != 0) kind = 3;
+                }
+                if (kind < 0) continue;
+                syms.push_back({sx - gx0, sy - gy0, hh, kind, hsh});
+            }
+        std::sort(syms.begin(), syms.end(), [](const Sym& a, const Sym& b) { return a.y < b.y; });
+        for (const Sym& sy : syms) {
+            double x = sy.x, y = sy.y;
+            if (sy.kind == 0) {
+                double s = S * (0.95 + 0.55 * clampd((sy.h - 1500) / 4000, 0, 1));
+                double tx = x + s * 0.05, ty = y - s * 0.62, lx = x - s * 0.58, rx = x + s * 0.58, by = y + s * 0.3;
+                tri(lx, by, tx, ty, x, by, lit, 0.97);
+                tri(x, by, tx, ty, rx, by, shade, 0.97);
+                if (sy.h > 4200) tri(tx - s * 0.16, ty + s * 0.26, tx, ty, tx + s * 0.16, ty + s * 0.26, snow, 1.0);
+                line(lx, by, tx, ty, ink, 0.95); line(tx, ty, rx, by, ink, 0.95);
+                line(tx, ty + 2, x + s * 0.1, by - 1, ink, 0.45);   // ridge line
+                for (int k = 1; k <= 3; k++) {                       // hatching on the shaded side
+                    double t = k / 4.0;
+                    line(tx + (rx - tx) * t, ty + (by - ty) * t, tx + (rx - tx) * t - s * 0.12, ty + (by - ty) * t + s * 0.1, ink, 0.4);
+                }
+            } else if (sy.kind == 1) {
+                double r = S * 0.3;
+                for (int k = 0; k < 10; k++) {
+                    double a0 = kPi + kPi * k / 10, a1 = kPi + kPi * (k + 1) / 10;
+                    line(x + std::cos(a0) * r, y + std::sin(a0) * r * 0.7, x + std::cos(a1) * r, y + std::sin(a1) * r * 0.7, ink, 0.8);
+                }
+            } else if (sy.kind == 2) {
+                for (int t = 0; t < 2; t++) {
+                    double ox = x + (t ? S * 0.22 : -S * 0.16), oy = y + (t ? S * 0.12 : -S * 0.05);
+                    line(ox, oy + S * 0.12, ox, oy + S * 0.32, ink, 0.9);
+                    circle(ox, oy, S * 0.17, leaf, ink);
+                }
+            } else {
+                for (int t = 0; t < 2; t++) {
+                    double ox = x + (t ? S * 0.2 : -S * 0.15), oy = y + (t ? S * 0.1 : -S * 0.04);
+                    tri(ox - S * 0.13, oy + S * 0.22, ox, oy - S * 0.28, ox + S * 0.13, oy + S * 0.22, conifer, 0.95);
+                    line(ox - S * 0.13, oy + S * 0.22, ox, oy - S * 0.28, ink, 0.9); line(ox, oy - S * 0.28, ox + S * 0.13, oy + S * 0.22, ink, 0.9);
+                    line(ox, oy + S * 0.22, ox, oy + S * 0.32, ink, 0.9);
+                }
+            }
+        }
+    }
 }
 
 void TileMap::update(const MapView& v, int sw, int sh) {

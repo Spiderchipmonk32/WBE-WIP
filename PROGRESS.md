@@ -5,6 +5,11 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Hand-drawn symbols on the fantasy map
+- The Fantasy style now draws **inked mountains** (lit and shaded sides, hatching, snow caps on the
+  highest), **hills**, **leafy forests** and **conifer forests** (taiga), placed by the actual terrain and
+  climate. Peaks mark rugged ground rather than every high plateau, and stay a readable size at every zoom.
+
 ### Templates, global climate, map tools and flags
 - **World templates** (World tab): Earth-like, archipelago, Pangaea, desert world, ice world, water
   world, hothouse. Picking one sets the sliders; press Generate planet.
