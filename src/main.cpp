@@ -1,10 +1,13 @@
-// Worldbuilder: 2D world map of a round planet, with generation, sculpting and map styles.
+// Worldbuilder: 2D world map of a round planet, with simulations layered on top.
 #include "raylib.h"
 #include "raygui.h"
 #include "planet.h"
+#include "world.h"
 #include "tilemap.h"
+#include "ui.h"
 #include <cmath>
 #include <algorithm>
+#include <string>
 
 namespace {
 
@@ -16,13 +19,12 @@ const char* formatKm(double km) {
 
 double wrapLon(double lon) { return lon - 360.0 * std::floor((lon + 180.0) / 360.0); }
 
-struct Theme { Color bg, grid, text, panelNote; };
+struct Theme { Color bg, grid, text; };
 Theme themeFor(MapStyle s) {
-    if (s == MapStyle::Fantasy) return {{214, 200, 164, 255}, {110, 80, 50, 90}, {70, 50, 30, 255}, {90, 70, 50, 255}};
-    return {{12, 16, 24, 255}, {255, 255, 255, 50}, {235, 238, 245, 255}, {150, 160, 175, 255}};
+    if (s == MapStyle::Fantasy) return {{214, 200, 164, 255}, {110, 80, 50, 90}, {70, 50, 30, 255}};
+    return {{12, 16, 24, 255}, {255, 255, 255, 50}, {235, 238, 245, 255}};
 }
 
-// Latitude/longitude grid with labels, step chosen to suit the zoom
 void drawGrid(const MapView& v, int sw, int sh, int left, Color c) {
     static const double steps[] = {0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30};
     double step = 30;
@@ -34,8 +36,7 @@ void drawGrid(const MapView& v, int sw, int sh, int left, Color c) {
     for (double lon = std::floor(lonMin / step) * step; lon <= lonMax; lon += step) {
         int x = (int)(sw / 2.0 + (lon - v.centerLon) * v.pxPerDeg);
         DrawLine(x, yTop, x, yBot, c);
-        double w = wrapLon(lon);
-        if (x > left) DrawText(TextFormat(fmt, std::fabs(w)), x + 3, std::max(yTop, 0) + 50, 14, c);
+        if (x > left) DrawText(TextFormat(fmt, std::fabs(wrapLon(lon))), x + 3, std::max(yTop, 0) + 50, 14, c);
     }
     for (double lat = std::ceil(latMin / step) * step; lat <= latMax; lat += step) {
         int y = (int)(sh / 2.0 - (lat - v.centerLat) * v.pxPerDeg);
@@ -56,41 +57,83 @@ void drawScaleBar(const MapView& v, double R, int x, int y, Color c) {
     DrawText(formatKm(nice), x, y - 26, 18, c);
 }
 
+void drawArrow(Vector2 a, Vector2 b, Color c, float thick) {
+    DrawLineEx(a, b, thick, c);
+    float dx = b.x - a.x, dy = b.y - a.y, l = std::sqrt(dx * dx + dy * dy);
+    if (l < 1) return;
+    dx /= l; dy /= l;
+    float hs = std::min(8.f, l * 0.45f);
+    Vector2 p1{b.x - dx * hs - dy * hs * 0.6f, b.y - dy * hs + dx * hs * 0.6f};
+    Vector2 p2{b.x - dx * hs + dy * hs * 0.6f, b.y - dy * hs - dx * hs * 0.6f};
+    DrawTriangle(b, p2, p1, c);
+    DrawTriangle(b, p1, p2, c);
+}
+
+// East and north unit vectors at a point, to turn 3D velocities into map directions
+void localAxes(double lat, double lon, Vec3d& east, Vec3d& north) {
+    double la = lat * kPi / 180, lo = lon * kPi / 180;
+    east = {std::cos(lo), 0, -std::sin(lo)};
+    north = {-std::sin(la) * std::sin(lo), std::cos(la), -std::sin(la) * std::cos(lo)};
+}
+
 } // namespace
+
+struct App {
+    PlanetSettings ui;
+    Planet planet;
+    World world;
+    TileMap* map = nullptr;
+    PlanetStats stats;
+    MapView view;
+
+    void regenerate() {
+        map->waitIdle();   // background threads must stop reading the old world first
+        planet.generate(ui);
+        world.generateTectonics(planet, ui.seed, ui.plateCount, ui.tectonicActivity);
+        planet.setUplift(&world.uplift);
+        world.sampleElevation(planet);
+        map->reset();
+        stats = planet.computeStats();
+    }
+};
 
 int main() {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
     InitWindow(1600, 900, "Worldbuilder");
     SetTargetFPS(144);
-    GuiSetStyle(DEFAULT, TEXT_SIZE, 20);
+    GuiSetStyle(DEFAULT, TEXT_SIZE, 18);
 
-    PlanetSettings ui;
-    Planet planet;
-    planet.generate(ui);
-    TileMap map(&planet);
-    PlanetStats stats = planet.computeStats();
+    App app;
+    TileMap map(&app.planet);
+    app.map = &map;
+    map.setWorld(&app.world);
+    app.regenerate();
 
-    MapView view;
+    MapView& view = app.view;
     view.pxPerDeg = GetScreenHeight() / 180.0 * 1.1;
-    bool seedEdit = false, painting = false, panning = false, showGrid = true;
-    int tool = 0;                 // 0 pan, 1 raise, 2 lower, 3 smooth, 4 flatten
+    bool seedEdit = false, painting = false, panning = false, showGrid = true, showVolcanoes = true;
+    int tab = 0;
+    int tool = 0;
     int styleUi = 0;
-    float brushT = 0.80f;         // log slider: 50 m .. 3,000 km
-    float strengthT = 0.851f;     // log slider: 0.1 .. 5,000 m/s
-    float radiusUi = ui.radiusKm, oceanUi = ui.oceanPercent, mountUi = ui.mountains, contUi = ui.continentSize;
+    int overlayUi = 0, overlayScroll = 0;
+    float brushT = 0.80f, strengthT = 0.851f;
+    float radiusUi = app.ui.radiusKm, oceanUi = app.ui.oceanPercent, mountUi = app.ui.mountains, contUi = app.ui.continentSize;
+    float platesUi = (float)app.ui.plateCount, activityUi = app.ui.tectonicActivity;
 
     while (!WindowShouldClose()) {
         const float dt = GetFrameTime();
         const int sw = GetScreenWidth(), sh = GetScreenHeight();
-        const double R = planet.radiusKm();
+        const double R = app.planet.radiusKm();
         const double brushKm = 0.05 * std::pow(60000.0, (double)brushT);
         const double strength = 0.1 * std::pow(50000.0, (double)strengthT);
-        const Rectangle panel = {10, 10, 320, (float)sh - 20};
+        const Rectangle panel = {10, 10, 340, (float)sh - 20};
         const Vector2 mouse = GetMousePosition();
         const bool overPanel = CheckCollisionPointRec(mouse, panel);
         const double minZoom = sh / 180.0, maxZoom = TileMap::TILE / 90.0 * (1 << TileMap::MAX_LEVEL) * 2;
+        const bool sculptTab = (tab == 2);
+        const int activeTool = sculptTab ? tool : 0;
 
-        // ---- Zoom (keeps the point under the cursor fixed) ----
+        // ---- Navigation ----
         float wheel = overPanel ? 0 : GetMouseWheelMove();
         if (wheel != 0) {
             double lon0 = view.centerLon + (mouse.x - sw / 2.0) / view.pxPerDeg;
@@ -99,9 +142,8 @@ int main() {
             view.centerLon = lon0 - (mouse.x - sw / 2.0) / view.pxPerDeg;
             view.centerLat = lat0 + (mouse.y - sh / 2.0) / view.pxPerDeg;
         }
-        // ---- Pan ----
         if (!overPanel && (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) ||
-                           (tool == 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))))
+                           (activeTool == 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))))
             panning = true;
         if (!IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) && !IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !IsMouseButtonDown(MOUSE_BUTTON_RIGHT))
             panning = false;
@@ -116,11 +158,13 @@ int main() {
             if (IsKeyDown(KEY_S)) view.centerLat -= k;
             if (IsKeyDown(KEY_A)) view.centerLon -= k;
             if (IsKeyDown(KEY_D)) view.centerLon += k;
-            if (IsKeyPressed(KEY_ONE)) tool = 0;
-            if (IsKeyPressed(KEY_TWO)) tool = 1;
-            if (IsKeyPressed(KEY_THREE)) tool = 2;
-            if (IsKeyPressed(KEY_FOUR)) tool = 3;
-            if (IsKeyPressed(KEY_FIVE)) tool = 4;
+            if (sculptTab) {
+                if (IsKeyPressed(KEY_ONE)) tool = 0;
+                if (IsKeyPressed(KEY_TWO)) tool = 1;
+                if (IsKeyPressed(KEY_THREE)) tool = 2;
+                if (IsKeyPressed(KEY_FOUR)) tool = 3;
+                if (IsKeyPressed(KEY_FIVE)) tool = 4;
+            }
             if (IsKeyPressed(KEY_LEFT_BRACKET)) brushT = std::max(0.f, brushT - 0.03f);
             if (IsKeyPressed(KEY_RIGHT_BRACKET)) brushT = std::min(1.f, brushT + 0.03f);
         }
@@ -128,114 +172,167 @@ int main() {
         double halfH = sh / 2.0 / view.pxPerDeg;
         view.centerLat = halfH >= 90 ? 0 : clampd(view.centerLat, -90 + halfH, 90 - halfH);
 
-        // ---- What's under the mouse ----
         double mLon = wrapLon(view.centerLon + (mouse.x - sw / 2.0) / view.pxPerDeg);
         double mLat = view.centerLat - (mouse.y - sh / 2.0) / view.pxPerDeg;
         bool hit = !overPanel && std::fabs(mLat) <= 90;
         Vec3d hitDir = TileMap::dirFromLatLon(clampd(mLat, -90, 90), mLon);
+        auto toScreen = [&](double lat, double lon) {
+            double dl = std::remainder(lon - view.centerLon, 360.0);
+            return Vector2{(float)(sw / 2.0 + dl * view.pxPerDeg), (float)(sh / 2.0 - (lat - view.centerLat) * view.pxPerDeg)};
+        };
 
         // ---- Sculpting ----
-        if (tool > 0 && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (activeTool > 0 && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             painting = true;
-            planet.beginStrokeGroup((BrushType)tool, hitDir, brushKm);
+            app.planet.beginStrokeGroup((BrushType)activeTool, hitDir, brushKm);
         }
         if (painting && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && hit) {
-            double amount = (tool == 1 || tool == 2) ? strength * dt : std::min(1.0, dt * 3 * strength / 1000);
-            planet.addDab((BrushType)tool, hitDir, brushKm, amount);
+            double amount = (activeTool == 1 || activeTool == 2) ? strength * dt : std::min(1.0, dt * 3 * strength / 1000);
+            app.planet.addDab((BrushType)activeTool, hitDir, brushKm, amount);
             map.invalidate(hitDir, brushKm * 1.1);
         }
         if (painting && !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             painting = false;
-            stats = planet.computeStats();
+            app.stats = app.planet.computeStats();
         }
         auto doUndo = [&]() {
-            for (auto& a : planet.undo()) map.invalidate(a.first, a.second * 1.1);
-            stats = planet.computeStats();
+            for (auto& a : app.planet.undo()) map.invalidate(a.first, a.second * 1.1);
+            app.stats = app.planet.computeStats();
         };
         if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && IsKeyPressed(KEY_Z)) doUndo();
 
         map.update(view, sw, sh);
 
-        // ---- Draw ----
+        // ---- Draw the map ----
         Theme th = themeFor(map.style());
         BeginDrawing();
         ClearBackground(th.bg);
         map.draw(view, sw, sh);
         if (showGrid) drawGrid(view, sw, sh, (int)(panel.x + panel.width), th.grid);
-        if (hit && tool > 0) {   // brush outline (an ellipse, because the map stretches east-west away from the equator)
+        Overlay ov = map.overlay();
+
+        if (ov == Overlay::Plates) {   // plate motion arrows
+            const float stepPx = 70;
+            for (float sy = stepPx / 2; sy < sh; sy += stepPx)
+                for (float sx = panel.x + panel.width + stepPx / 2; sx < sw; sx += stepPx) {
+                    double lat = view.centerLat - (sy - sh / 2.0) / view.pxPerDeg;
+                    if (std::fabs(lat) > 85) continue;
+                    double lon = wrapLon(view.centerLon + (sx - sw / 2.0) / view.pxPerDeg);
+                    Vec3d v = app.world.plateVelocity(World::nearestCell(lat, lon)), e, n;
+                    localAxes(lat, lon, e, n);
+                    float ve = (float)v.dot(e), vn = (float)v.dot(n);
+                    float k = 28.f;
+                    drawArrow({sx, sy}, {sx + ve * k, sy - vn * k}, Fade(BLACK, 0.7f), 2.f);
+                }
+        }
+        if (showVolcanoes && (ov == Overlay::Plates || ov == Overlay::Rock || ov == Overlay::Earthquakes || view.pxPerDeg > 12)) {
+            for (const Volcano& v : app.world.volcanoes) {
+                Vector2 p = toScreen(v.lat, v.lon);
+                if (p.x < panel.x + panel.width || p.x > sw || p.y < 0 || p.y > sh) continue;
+                DrawTriangle({p.x, p.y - 7}, {p.x - 6, p.y + 5}, {p.x + 6, p.y + 5}, v.hotspot ? ORANGE : RED);
+                DrawTriangleLines({p.x, p.y - 7}, {p.x - 6, p.y + 5}, {p.x + 6, p.y + 5}, BLACK);
+            }
+        }
+        if (hit && activeTool > 0) {
             double kmPerDeg = 111.195 * R / 6371.0;
             float ry = (float)(brushKm / kmPerDeg * view.pxPerDeg);
             float rx = (float)(ry / std::max(0.02, std::cos(mLat * kPi / 180)));
             DrawEllipseLines((int)mouse.x, (int)mouse.y, rx, ry, map.style() == MapStyle::Fantasy ? Color{60, 40, 25, 255} : RAYWHITE);
         }
 
-        // ---- UI panel ----
+        // ---- Panel ----
         GuiPanel(panel, NULL);
-        float x = 24, w = 292, y = 22;
-        auto label = [&](const char* t) { GuiLabel(Rectangle{x, y, w, 22}, t); y += 24; };
-        auto heading = [&](const char* t) { y += 6; GuiLabel(Rectangle{x, y, w, 22}, t); y += 28; };
-        auto slider = [&](float* val, float mn, float mx) { GuiSliderBar(Rectangle{x, y, w, 20}, NULL, NULL, val, mn, mx); y += 28; };
+        Layout L{panel.x + 14, panel.y + 12, panel.width - 28};
+        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "World;Map;Sculpt", &tab);
+        L.y += 40;
 
-        heading("PLANET");
-        GuiLabel(Rectangle{x, y, 60, 28}, "Seed");
-        if (GuiValueBox(Rectangle{x + 60, y, 130, 28}, NULL, &ui.seed, 0, 999999, seedEdit)) seedEdit = !seedEdit;
-        bool randomClicked = GuiButton(Rectangle{x + 198, y, 94, 28}, "Random");
-        y += 36;
-        label(TextFormat("Radius: %.0f km", radiusUi)); slider(&radiusUi, 1000, 20000);
-        label(TextFormat("Ocean cover: %.0f%%", oceanUi)); slider(&oceanUi, 0, 95);
-        label(TextFormat("Mountains: %.1f", mountUi)); slider(&mountUi, 0, 2.5f);
-        label(TextFormat("Continent size: %.1f", contUi)); slider(&contUi, 0.4f, 2.5f);
-        bool genClicked = GuiButton(Rectangle{x, y, w, 34}, "Generate planet");
-        y += 42;
-
-        heading("MAP STYLE");
-        GuiToggleGroup(Rectangle{x, y, 95, 28}, "Realistic;Fantasy;Elevation", &styleUi);
-        y += 36;
-        GuiCheckBox(Rectangle{x, y, 22, 22}, "Latitude/longitude grid", &showGrid); y += 30;
-
-        heading("SCULPT");
-        GuiToggleGroup(Rectangle{x, y, 95, 28}, "Pan;Raise;Lower\nSmooth;Flatten", &tool);
-        y += 64;
-        label(TextFormat("Brush radius: %s", formatKm(brushKm))); slider(&brushT, 0, 1);
-        label(TextFormat("Strength: %.1f m/s", strength)); slider(&strengthT, 0, 1);
-        if (GuiButton(Rectangle{x, y, w, 30}, "Undo (Ctrl+Z)")) doUndo();
-        y += 38;
-
-        heading("STATS");
-        label(TextFormat("Land: %.1f%%", stats.landPercent));
-        label(TextFormat("Highest: %.0f m", stats.highestM));
-        label(TextFormat("Deepest: %.0f m", stats.deepestM));
-        label(TextFormat("Area: %.1fM km2", stats.areaMkm2));
-
-        if ((MapStyle)styleUi != map.style()) map.setStyle((MapStyle)styleUi);
-        if (randomClicked) { ui.seed = GetRandomValue(0, 999999); genClicked = true; }
-        if (genClicked) {
-            ui.radiusKm = std::round(radiusUi); ui.oceanPercent = oceanUi; ui.mountains = mountUi; ui.continentSize = contUi;
-            map.waitIdle();          // background threads must stop reading the old planet first
-            planet.generate(ui);
-            map.reset();
-            stats = planet.computeStats();
+        if (tab == 0) {
+            L.heading("PLANET");
+            GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Seed");
+            if (GuiValueBox(Rectangle{L.x + 60, L.y, 130, 28}, NULL, &app.ui.seed, 0, 999999, seedEdit)) seedEdit = !seedEdit;
+            bool randomClicked = GuiButton(Rectangle{L.x + 198, L.y, L.w - 198, 28}, "Random");
+            L.y += 36;
+            L.label(TextFormat("Radius: %.0f km", radiusUi)); L.slider(&radiusUi, 1000, 20000);
+            L.label(TextFormat("Ocean cover: %.0f%%", oceanUi)); L.slider(&oceanUi, 0, 95);
+            L.label(TextFormat("Mountains: %.1f", mountUi)); L.slider(&mountUi, 0, 2.5f);
+            L.label(TextFormat("Continent size: %.1f", contUi)); L.slider(&contUi, 0.4f, 2.5f);
+            L.heading("TECTONICS");
+            L.label(TextFormat("Plates: %d", (int)platesUi)); L.slider(&platesUi, 4, 30);
+            L.label(TextFormat("Tectonic activity: %.1f", activityUi)); L.slider(&activityUi, 0, 2);
+            bool genClicked = L.button("Generate planet", 34);
+            L.heading("STATS");
+            L.label(TextFormat("Land: %.1f%%", app.stats.landPercent));
+            L.label(TextFormat("Highest: %.0f m   Deepest: %.0f m", app.stats.highestM, app.stats.deepestM));
+            L.label(TextFormat("Area: %.1fM km2   Plates: %zu", app.stats.areaMkm2, app.world.plates.size()));
+            L.label(TextFormat("Volcanoes: %zu", app.world.volcanoes.size()));
+            if (randomClicked) { app.ui.seed = GetRandomValue(0, 999999); genClicked = true; }
+            if (genClicked) {
+                app.ui.radiusKm = std::round(radiusUi); app.ui.oceanPercent = oceanUi; app.ui.mountains = mountUi;
+                app.ui.continentSize = contUi; app.ui.plateCount = (int)platesUi; app.ui.tectonicActivity = activityUi;
+                app.regenerate();
+            }
+        } else if (tab == 1) {
+            L.heading("MAP STYLE");
+            GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Realistic;Fantasy;Elevation", &styleUi);
+            L.y += 38;
+            L.check("Latitude/longitude grid", &showGrid);
+            L.check("Volcano markers", &showVolcanoes);
+            L.heading("OVERLAY");
+            GuiListView(Rectangle{L.x, L.y, L.w, 150}, "None;Tectonic plates;Rock types;Earthquake zones", &overlayScroll, &overlayUi);
+            L.y += 160;
+            // legend
+            if (overlayUi == 1) {
+                L.legend(Color{200, 30, 30, 255}, "Converging (mountains, trenches)");
+                L.legend(Color{30, 90, 210, 255}, "Spreading (rifts, ridges)");
+                L.legend(Color{230, 190, 30, 255}, "Sliding (transform faults)");
+                L.note("Arrows show which way each plate moves.");
+            } else if (overlayUi == 2) {
+                const Color pal[6] = {{70, 82, 100, 255}, {214, 188, 132, 255}, {178, 58, 48, 255}, {232, 150, 168, 255}, {132, 104, 176, 255}, {96, 140, 84, 255}};
+                for (int r = 0; r < 6; r++) L.legend(pal[r], World::rockName((Rock)r));
+            } else if (overlayUi == 3) {
+                L.legend(Color{255, 210, 40, 255}, "Some earthquake risk");
+                L.legend(Color{255, 30, 40, 255}, "High earthquake risk");
+            }
+        } else if (tab == 2) {
+            L.heading("SCULPT");
+            GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Pan;Raise;Lower\nSmooth;Flatten", &tool);
+            L.y += 64;
+            L.label(TextFormat("Brush radius: %s", formatKm(brushKm))); L.slider(&brushT, 0, 1);
+            L.label(TextFormat("Strength: %.1f m/s", strength)); L.slider(&strengthT, 0, 1);
+            if (L.button("Undo (Ctrl+Z)", 30)) doUndo();
+            L.note("Left-drag on the map to sculpt. Keys 1-5 switch tools, [ and ] resize the brush.");
         }
+        if ((MapStyle)styleUi != map.style()) map.setStyle((MapStyle)styleUi);
+        static const Overlay overlayList[] = {Overlay::None, Overlay::Plates, Overlay::Rock, Overlay::Earthquakes};
+        if (overlayUi < 0) overlayUi = 0;
+        map.setOverlay(overlayList[std::min(overlayUi, 3)], 0);
 
         // ---- Readouts ----
-        const int fs = 20;
+        const int fs = 18;
         double kmPerPx = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
         const char* info = TextFormat("1 px = %s   Tiles %d   Drawing %d   %d FPS", formatKm(kmPerPx), map.cached(), map.pending(), GetFPS());
         int iw = MeasureText(info, fs);
-        DrawRectangle(sw - iw - 30, 10, iw + 20, 34, Fade(BLACK, 0.55f));
+        DrawRectangle(sw - iw - 30, 10, iw + 20, 32, Fade(BLACK, 0.55f));
         DrawText(info, sw - iw - 20, 17, fs, RAYWHITE);
         if (hit) {
-            double spacing = std::max(0.0005, kmPerPx);
-            double e = planet.elevation(hitDir, Planet::detailOctavesFor(spacing, R));
-            const char* t = TextFormat("%.4f %c, %.4f %c   %s %.0f m", std::fabs(mLat), mLat >= 0 ? 'N' : 'S', std::fabs(mLon),
-                                       mLon >= 0 ? 'E' : 'W', e > 0 ? "Elevation" : "Depth", std::fabs(e));
-            int tw = MeasureText(t, fs);
-            DrawRectangle(sw - tw - 30, sh - 44, tw + 20, 34, Fade(BLACK, 0.55f));
-            DrawText(t, sw - tw - 20, sh - 37, fs, RAYWHITE);
+            double e = app.planet.elevation(hitDir, Planet::detailOctavesFor(std::max(0.0005, kmPerPx), R));
+            int c = World::nearestCell(mLat, mLon);
+            const Plate& pl = app.world.plates[app.world.plateId[c]];
+            Vec3d v = app.world.plateVelocity(c);
+            std::string lines[5] = {
+                TextFormat("%.4f %c, %.4f %c", std::fabs(mLat), mLat >= 0 ? 'N' : 'S', std::fabs(mLon), mLon >= 0 ? 'E' : 'W'),
+                TextFormat("%s %.0f m", e > 0 ? "Elevation" : "Depth", std::fabs(e)),
+                TextFormat("Plate %d (%s), moving %.1f cm/yr", app.world.plateId[c] + 1, pl.continental ? "continental" : "oceanic", v.length() * 5),
+                TextFormat("Rock: %s, %.0f million yrs", World::rockName((Rock)app.world.rock[c]), app.world.rockAge[c]),
+                TextFormat("Nearest plate edge: %.0f km", app.world.distBoundaryKm[c])};
+            int tw = 0;
+            for (auto& s : lines) tw = std::max(tw, MeasureText(s.c_str(), fs));
+            int bh = 5 * 22 + 14;
+            DrawRectangle(sw - tw - 30, sh - bh - 10, tw + 20, bh, Fade(BLACK, 0.6f));
+            for (int i = 0; i < 5; i++) DrawText(lines[i].c_str(), sw - tw - 20, sh - bh - 3 + i * 22, fs, RAYWHITE);
         }
         drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
-        DrawText("Scroll: zoom   Drag (Pan tool), right or middle-drag: move   WASD: move   1-5: tools   [ ]: brush size",
-                 (int)(panel.x + panel.width) + 24, sh - 28, 16, Fade(th.text, 0.8f));
+        DrawText("Scroll: zoom   Right/middle-drag or WASD: move", (int)(panel.x + panel.width) + 24, sh - 28, 16, Fade(th.text, 0.8f));
         EndDrawing();
     }
 

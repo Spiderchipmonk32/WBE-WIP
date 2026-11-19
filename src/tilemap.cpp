@@ -65,6 +65,45 @@ void TileMap::setStyle(MapStyle s) {
     invalidateAll();   // old tiles stay on screen until the new ones arrive
 }
 
+void TileMap::setOverlay(Overlay o, int param) {
+    if (o == overlay_ && param == overlayParam_) return;
+    overlay_ = o; overlayParam_ = param;
+    invalidateAll();
+}
+
+bool TileMap::overlayColor(Overlay o, int param, double lat, double lon, double h, double rgb[3], double& alpha) const {
+    (void)h; (void)param;
+    if (!world_ || world_->plateId.empty()) return false;
+    int c = World::nearestCell(lat, lon);
+    auto set = [&](double r, double g, double b, double a) { rgb[0] = r; rgb[1] = g; rgb[2] = b; alpha = a; return true; };
+    switch (o) {
+        case Overlay::Plates: {
+            const Plate& p = world_->plates[world_->plateId[c]];
+            double d = world_->distBoundaryKm[c];
+            if (d < world_->cellKm() * 0.8) {
+                switch ((Boundary)world_->boundary[c]) {
+                    case Boundary::Collision: case Boundary::Subduction: case Boundary::IslandArc: return set(200, 30, 30, 0.9);
+                    case Boundary::Rift: case Boundary::Ridge: return set(30, 90, 210, 0.9);
+                    case Boundary::Transform: return set(230, 190, 30, 0.9);
+                    default: break;
+                }
+            }
+            return set(p.r, p.g, p.b, p.continental ? 0.45 : 0.3);
+        }
+        case Overlay::Rock: {
+            static const double pal[6][3] = {{70, 82, 100}, {214, 188, 132}, {178, 58, 48}, {232, 150, 168}, {132, 104, 176}, {96, 140, 84}};
+            int r = std::min(5, (int)world_->rock[c]);
+            return set(pal[r][0], pal[r][1], pal[r][2], 0.6);
+        }
+        case Overlay::Earthquakes: {
+            double st = World::sample(world_->stress, lat, lon);
+            if (st < 0.05) return false;
+            return set(255, 220 - 200 * st, 40, clampd(st * 1.1, 0, 0.8));
+        }
+        default: return false;
+    }
+}
+
 void TileMap::invalidateAll() {
     stamp_++;
     for (auto& kv : cache_) kv.second.need = stamp_;
@@ -201,6 +240,10 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
                 }
                 col = scale(col, 1 + grain * 0.06);
             }
+            if (j.overlay != Overlay::None) {
+                double oc[3], oa;
+                if (overlayColor(j.overlay, j.param, lat, lon, h, oc, oa)) col = mixc(col, RGB{oc[0], oc[1], oc[2]}, oa);
+            }
             unsigned char* p = &out[(y * N + x) * 4];
             p[0] = u8(col.r); p[1] = u8(col.g); p[2] = u8(col.b); p[3] = 255;
         }
@@ -268,7 +311,7 @@ void TileMap::update(const MapView& v, int sw, int sh) {
             double TT = tileDeg(w.l);
             Vec3d c = dirFromLatLon(90 - (w.ty + 0.5) * TT, -180 + (w.tx + 0.5) * TT);
             double ang = TT * kPi / 180 * 0.75 + 0.002;
-            queue_.push_back(Job{w.l, w.tx, w.ty, entry(w.l, w.tx, w.ty).need, style_, planet_->strokesCopyNear(c, ang)});
+            queue_.push_back(Job{w.l, w.tx, w.ty, entry(w.l, w.tx, w.ty).need, style_, overlay_, overlayParam_, planet_->strokesCopyNear(c, ang)});
             inFlight_.insert(key(w.l, w.tx, w.ty));
         }
     }

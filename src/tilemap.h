@@ -1,5 +1,6 @@
 #pragma once
 #include "planet.h"
+#include "world.h"
 #include "raylib.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -15,6 +16,9 @@
 // tiles are rendered on background threads and cached as textures.
 
 enum class MapStyle { Realistic = 0, Fantasy = 1, Elevation = 2 };
+
+// Data drawn on top of the map style
+enum class Overlay { None = 0, Plates, Rock, Earthquakes, Temperature, Rainfall, Biomes, Resource, Political, Population, Count };
 
 struct MapView {
     double centerLon = 0, centerLat = 15;
@@ -34,6 +38,9 @@ public:
 
     void setStyle(MapStyle s);
     MapStyle style() const { return style_; }
+    void setWorld(const World* w) { world_ = w; }
+    void setOverlay(Overlay o, int param);   // param: month for climate, resource id for resources
+    Overlay overlay() const { return overlay_; }
     void invalidate(const Vec3d& dir, double radiusKm);   // redraw the area a brush touched
     void invalidateAll();
 
@@ -49,17 +56,25 @@ public:
 
 private:
     struct Entry { Texture2D tex{}; bool hasTex = false; uint64_t built = 0, need = 1, lastUsed = 0; int level = 0, tx = 0, ty = 0; };
-    struct Job { int level, tx, ty; uint64_t stamp; MapStyle style; std::vector<Stroke> strokes; };
+    struct Job { int level, tx, ty; uint64_t stamp; MapStyle style; Overlay overlay; int param; std::vector<Stroke> strokes; };
     struct Result { int level, tx, ty; uint64_t stamp; std::vector<unsigned char> rgba; };
 
     static uint64_t key(int l, int tx, int ty) { return ((uint64_t)l << 48) | ((uint64_t)ty << 24) | (uint64_t)tx; }
     Entry& entry(int l, int tx, int ty);
     void workerLoop();
     void render(const Job& j, std::vector<unsigned char>& out) const;
+public:
+    // Overlay colour for a point; returns false when there's nothing to draw there.
+    // Also used by the legend and by other code that wants the same colours.
+    bool overlayColor(Overlay o, int param, double lat, double lon, double h, double rgb[3], double& alpha) const;
+private:
     bool drawTile(int l, int tx, int ty, Rectangle dst);
 
     const Planet* planet_;
+    const World* world_ = nullptr;
     MapStyle style_ = MapStyle::Realistic;
+    Overlay overlay_ = Overlay::None;
+    int overlayParam_ = 0;
     std::unordered_map<uint64_t, Entry> cache_;
     std::unordered_set<uint64_t> inFlight_;
     uint64_t stamp_ = 1, frame_ = 0;

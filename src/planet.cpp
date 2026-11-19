@@ -1,4 +1,5 @@
 #include "planet.h"
+#include "world.h"
 #include <algorithm>
 #include <cmath>
 
@@ -50,6 +51,7 @@ void Planet::generate(const PlanetSettings& s) {
     contScale_ = 1.1 / std::max(0.2f, s.continentSize);
     strokes_.clear();
     group_ = 0;
+    uplift_ = nullptr;
 
     // Sea level is chosen so the requested share of the surface is ocean.
     std::vector<double> samples(kStatSamples);
@@ -76,12 +78,19 @@ double Planet::baseRaw(const Vec3d& d) const {
 
 double Planet::baseElevation(const Vec3d& d) const {
     double v = baseRaw(d);
+    double h;
     if (v >= sea_) {
         double t = clampd((v - sea_) / std::max(1e-6, hi_ - sea_), 0, 1);
-        return 8800.0 * std::pow(t, 1.7);
+        h = 6500.0 * std::pow(t, 1.8);
+    } else {
+        double t = clampd((sea_ - v) / std::max(1e-6, sea_ - lo_), 0, 1);
+        h = -(80.0 + 6200.0 * smoothstepd(0, 0.35, t) + 3500.0 * t * t * t);
     }
-    double t = clampd((sea_ - v) / std::max(1e-6, sea_ - lo_), 0, 1);
-    return -(80.0 + 6200.0 * smoothstepd(0, 0.35, t) + 3500.0 * t * t * t);
+    if (uplift_) {
+        double lat = std::asin(clampd(d.y, -1, 1)) * 180.0 / kPi, lon = std::atan2(d.x, d.z) * 180.0 / kPi;
+        h += World::sample(*uplift_, lat, lon);
+    }
+    return h;
 }
 
 double Planet::detail(const Vec3d& d, double baseM, int octaves) const {
