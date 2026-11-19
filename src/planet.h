@@ -54,6 +54,9 @@ public:
 
     PlanetStats computeStats() const;
     static void colorFor(double elevM, unsigned char rgb[3]);
+    // Surface colour with rough ice caps and dry/wet variation (a stand-in until the
+    // climate simulation exists). Alpha is 255 for land and 128 for water.
+    void surfaceColor(const Vec3d& dir, double elevM, unsigned char rgba[4]) const;
 
 private:
     double baseRaw(const Vec3d& d) const;
@@ -61,7 +64,7 @@ private:
     double detail(const Vec3d& d, double baseM, int octaves) const;
 
     PlanetSettings settings_;
-    Simplex3 nCont_, nMtn_, nSmall_, nWarp_, nDetail_;
+    Simplex3 nCont_, nMtn_, nSmall_, nWarp_, nDetail_, nMoist_;
     double sea_ = 0, hi_ = 1, lo_ = -1, contScale_ = 1.1;
     std::vector<Stroke> strokes_;
     int group_ = 0;

@@ -7,6 +7,8 @@
 #include "terrain.h"
 #include <cmath>
 #include <algorithm>
+#include <vector>
+#include <cstdint>
 
 static const char* kVertexShader = R"(#version 330
 in vec3 vertexPosition;
@@ -36,10 +38,81 @@ out vec4 finalColor;
 void main() {
     vec3 n = normalize(fragNormal);
     float diffuse = max(dot(n, sunDir), 0.0);
-    vec3 c = fragColor.rgb * (0.30 + 0.85 * diffuse);
+    vec3 c = fragColor.rgb * (0.10 + 0.95 * diffuse);
+    if (fragColor.a < 0.9) {   // water: sun glint
+        vec3 v = normalize(-fragPos);
+        vec3 r = reflect(-sunDir, n);
+        float s = pow(max(dot(r, v), 0.0), 60.0);
+        c += vec3(1.0, 0.95, 0.85) * s * 0.6 * step(0.0, dot(n, sunDir));
+    }
     float fog = 1.0 - exp(-length(fragPos) * fogDensity);
     c = mix(c, fogColor, clamp(fog, 0.0, 0.65));
     finalColor = vec4(c, 1.0);
+}
+)";
+
+// Simple pass-through vertex shader for the atmosphere and cloud shells (unit spheres).
+static const char* kShellVertex = R"(#version 330
+in vec3 vertexPosition;
+uniform mat4 mvp;
+uniform mat4 matModel;
+out vec3 localPos;
+out vec3 fragPos;
+void main() {
+    localPos = vertexPosition;
+    fragPos = (matModel * vec4(vertexPosition, 1.0)).xyz;
+    gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
+)";
+
+// Atmosphere: glow based on how close each view ray passes to the planet.
+static const char* kAtmoFragment = R"(#version 330
+in vec3 localPos;
+in vec3 fragPos;
+uniform vec3 planetCenter;   // camera-relative
+uniform float planetR;
+uniform float atmoR;
+uniform vec3 sunDir;
+uniform float strength;
+out vec4 finalColor;
+void main() {
+    vec3 v = normalize(fragPos);
+    float t = dot(planetCenter, v);
+    vec3 closest = v * t - planetCenter;
+    float h = length(closest);
+    float glow = h > planetR ? pow(clamp(1.0 - (h - planetR) / (atmoR - planetR), 0.0, 1.0), 2.2)
+                             : pow(h / planetR, 6.0);
+    if (t < 0.0) glow = 0.0;
+    float sunSide = dot(normalize(closest), sunDir);
+    float light = clamp(sunSide * 0.9 + 0.3, 0.0, 1.0);
+    vec3 col = mix(vec3(1.0, 0.55, 0.3), vec3(0.35, 0.62, 1.0), clamp(sunSide * 2.5 + 0.6, 0.0, 1.0));
+    finalColor = vec4(col * glow * light * strength, 1.0);
+}
+)";
+
+// Decorative clouds from 3D value noise (real weather comes with the climate step).
+static const char* kCloudFragment = R"(#version 330
+in vec3 localPos;
+in vec3 fragPos;
+uniform vec3 sunDir;
+uniform vec3 offset;
+uniform float fade;
+out vec4 finalColor;
+float hash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float vnoise(vec3 x) {
+    vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x), mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x), mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+}
+float fbm(vec3 p) { float a = 0.5, s = 0.0; for (int i = 0; i < 6; i++) { s += a * vnoise(p); p *= 2.03; a *= 0.5; } return s; }
+void main() {
+    vec3 n = normalize(localPos);
+    float lat = abs(n.y);
+    float bands = 0.06 * cos(lat * 9.0);                  // busier near the equator and mid-latitudes
+    float v = fbm(n * 2.6 + offset) * 0.75 + fbm(n * 9.0 + offset * 1.7) * 0.35 + bands;
+    float a = smoothstep(0.56, 0.74, v);
+    float light = 0.08 + 0.95 * max(dot(n, sunDir), 0.0);
+    finalColor = vec4(vec3(light), a * 0.85 * fade);
 }
 )";
 
@@ -80,6 +153,38 @@ int main() {
     Material material = LoadMaterialDefault();
     material.shader = shader;
 
+    // Atmosphere and cloud shells share one unit-sphere mesh, scaled when drawn
+    Mesh shellMesh = GenMeshSphere(1.0f, 96, 192);
+    Shader atmoShader = LoadShaderFromMemory(kShellVertex, kAtmoFragment);
+    atmoShader.locs[SHADER_LOC_MATRIX_MODEL] = GetShaderLocation(atmoShader, "matModel");
+    int locAtmoCenter = GetShaderLocation(atmoShader, "planetCenter");
+    int locAtmoR = GetShaderLocation(atmoShader, "planetR");
+    int locAtmoOuter = GetShaderLocation(atmoShader, "atmoR");
+    int locAtmoSun = GetShaderLocation(atmoShader, "sunDir");
+    int locAtmoStrength = GetShaderLocation(atmoShader, "strength");
+    Material atmoMat = LoadMaterialDefault();
+    atmoMat.shader = atmoShader;
+    Shader cloudShader = LoadShaderFromMemory(kShellVertex, kCloudFragment);
+    cloudShader.locs[SHADER_LOC_MATRIX_MODEL] = GetShaderLocation(cloudShader, "matModel");
+    int locCloudSun = GetShaderLocation(cloudShader, "sunDir");
+    int locCloudOffset = GetShaderLocation(cloudShader, "offset");
+    int locCloudFade = GetShaderLocation(cloudShader, "fade");
+    Material cloudMat = LoadMaterialDefault();
+    cloudMat.shader = cloudShader;
+
+    // Fixed starfield (directions on the sky)
+    std::vector<Vec3d> stars;
+    std::vector<unsigned char> starBright;
+    {
+        uint32_t st = 12345u;
+        auto rnd = [&st]() { st = st * 1664525u + 1013904223u; return (st >> 8) / 16777216.0; };
+        for (int i = 0; i < 2500; i++) {
+            double u = rnd() * 2 - 1, a = rnd() * 2 * kPi, s = std::sqrt(1 - u * u);
+            stars.push_back({s * std::cos(a), u, s * std::sin(a)});
+            starBright.push_back((unsigned char)(70 + 185 * std::pow(rnd(), 3.0)));
+        }
+    }
+
     PlanetSettings ui;
     Planet planet;
     Terrain terrain;
@@ -94,6 +199,7 @@ int main() {
     float strengthT = 0.851f;           // log slider: 0.1 .. 5,000 m/s (default 1,000)
     float exag = terrain.exaggeration;
     bool drain = false, sunFollows = true, painting = false, panning = false, turning = false;
+    bool showClouds = true, showAtmosphere = true;
     float radiusUi = ui.radiusKm, oceanUi = ui.oceanPercent, mountUi = ui.mountains, contUi = ui.continentSize;
 
     while (!WindowShouldClose()) {
@@ -220,9 +326,12 @@ int main() {
                     (unsigned char)(space.b + (sky.b - space.b) * skyT), 255};
         float fogColor[3] = {bg.r / 255.f, bg.g / 255.f, bg.b / 255.f};
         float fogDensity = altitude < 1500 ? (float)((1.0 / (600 + altitude * 3)) * (1 - altitude / 1500)) : 0.f;
-        Vec3d sun = sunFollows ? (up * 0.75 + east * 0.45 + north * 0.35).normalized() : Vec3d{0.6, 0.35, 0.7}.normalized();
+        // Sun from the upper left of the view, so the day/night line shows on the globe's right edge
+        Vec3d sun = sunFollows ? (up * 0.55 + camRight * (-0.7) + camUp * 0.45).normalized() : Vec3d{0.6, 0.35, 0.7}.normalized();
         float sunV[3] = {(float)sun.x, (float)sun.y, (float)sun.z};
         SetShaderValue(shader, locSun, sunV, SHADER_UNIFORM_VEC3);
+        SetShaderValue(atmoShader, locAtmoSun, sunV, SHADER_UNIFORM_VEC3);
+        SetShaderValue(cloudShader, locCloudSun, sunV, SHADER_UNIFORM_VEC3);
         SetShaderValue(shader, locFogColor, fogColor, SHADER_UNIFORM_VEC3);
         SetShaderValue(shader, locFogDensity, &fogDensity, SHADER_UNIFORM_FLOAT);
 
@@ -235,10 +344,54 @@ int main() {
 
         BeginDrawing();
         ClearBackground(bg);
+        if (skyT < 0.99) {   // stars, fading out as the sky turns blue
+            for (size_t i = 0; i < stars.size(); i++) {
+                if (stars[i].dot(view) < 0.3) continue;
+                Vector2 s = GetWorldToScreen(toV3(stars[i] * 100.0), cam);
+                unsigned char b = (unsigned char)(starBright[i] * (1 - skyT));
+                DrawRectangle((int)s.x, (int)s.y, b > 200 ? 2 : 1, b > 200 ? 2 : 1, Color{b, b, (unsigned char)std::min(255, b + 15), 255});
+            }
+        }
         BeginMode3D(cam);
         rlDisableBackfaceCulling();
         terrain.draw(camPos, material);
         rlEnableBackfaceCulling();
+
+        Vec3d centerRel = -camPos;   // planet centre, relative to the camera
+        // Clouds: hidden when you're close to the ground
+        double cloudR = R + std::max(12.0, terrain.maxDisplayKm() * 0.25);
+        float cloudFade = (float)smoothstepd(cloudR - R + 40, (cloudR - R) * 4 + 400, altitude);
+        if (showClouds && cloudFade > 0.01f) {
+            float off[3] = {(float)(ui.seed % 997) * 0.37f + (float)GetTime() * 0.004f, (float)(ui.seed % 389) * 0.53f, 11.0f};
+            SetShaderValue(cloudShader, locCloudOffset, off, SHADER_UNIFORM_VEC3);
+            SetShaderValue(cloudShader, locCloudFade, &cloudFade, SHADER_UNIFORM_FLOAT);
+            rlDrawRenderBatchActive();
+            rlDisableDepthMask();
+            DrawMesh(shellMesh, cloudMat, MatrixMultiply(MatrixScale((float)cloudR, (float)cloudR, (float)cloudR),
+                                                         MatrixTranslate((float)centerRel.x, (float)centerRel.y, (float)centerRel.z)));
+            rlDrawRenderBatchActive();
+            rlEnableDepthMask();
+        }
+        // Atmosphere glow: drawn over everything, added on top of the colours below
+        double atmoR = R * 1.025 + terrain.maxDisplayKm() * 0.3;
+        float atmoStrength = (float)(0.85 * smoothstepd(atmoR - R, (atmoR - R) * 5, altitude));
+        if (showAtmosphere && atmoStrength > 0.01f) {
+            float c3[3] = {(float)centerRel.x, (float)centerRel.y, (float)centerRel.z};
+            float pr = (float)R, ar = (float)atmoR;
+            SetShaderValue(atmoShader, locAtmoCenter, c3, SHADER_UNIFORM_VEC3);
+            SetShaderValue(atmoShader, locAtmoR, &pr, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(atmoShader, locAtmoOuter, &ar, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(atmoShader, locAtmoStrength, &atmoStrength, SHADER_UNIFORM_FLOAT);
+            rlDrawRenderBatchActive();
+            rlDisableDepthTest();
+            rlSetCullFace(RL_CULL_FACE_FRONT);   // inside faces: one layer covering the whole disc
+            BeginBlendMode(BLEND_ADDITIVE);
+            DrawMesh(shellMesh, atmoMat, MatrixMultiply(MatrixScale((float)atmoR, (float)atmoR, (float)atmoR),
+                                                        MatrixTranslate((float)centerRel.x, (float)centerRel.y, (float)centerRel.z)));
+            EndBlendMode();
+            rlSetCullFace(RL_CULL_FACE_BACK);
+            rlEnableDepthTest();
+        }
         if (hit && tool > 0) {   // brush outline
             rlDrawRenderBatchActive();
             rlDisableDepthTest();
@@ -292,7 +445,9 @@ int main() {
         heading("VIEW");
         label(TextFormat("Height exaggeration: %.0fx", exag)); slider(&exag, 1, 50);
         GuiCheckBox(Rectangle{x, y, 22, 22}, "Drain oceans", &drain); y += 30;
-        GuiCheckBox(Rectangle{x, y, 22, 22}, "Sun follows camera", &sunFollows); y += 34;
+        GuiCheckBox(Rectangle{x, y, 22, 22}, "Sun follows camera", &sunFollows); y += 30;
+        GuiCheckBox(Rectangle{x, y, 22, 22}, "Clouds", &showClouds);
+        GuiCheckBox(Rectangle{x + 140, y, 22, 22}, "Atmosphere", &showAtmosphere); y += 34;
 
         heading("STATS");
         label(TextFormat("Land: %.1f%%", stats.landPercent));
@@ -334,6 +489,9 @@ int main() {
 
     terrain.clear();
     UnloadMaterial(material);   // also unloads the shader
+    UnloadMaterial(atmoMat);
+    UnloadMaterial(cloudMat);
+    UnloadMesh(shellMesh);
     CloseWindow();
     return 0;
 }

@@ -106,13 +106,12 @@ void Terrain::build(TileNode& n) {
     m.indices = (unsigned short*)MemAlloc(triCount * 3 * sizeof(unsigned short));
 
     std::vector<Vec3d> normals(mainCount);
-    auto put = [&](int vi, const Vec3d& pos, const Vec3d& nrm, double hM) {
+    auto put = [&](int vi, const Vec3d& pos, const Vec3d& nrm, double hM, const Vec3d& dir) {
         Vec3d rel = pos - n.centerPos;
         m.vertices[vi * 3 + 0] = (float)rel.x; m.vertices[vi * 3 + 1] = (float)rel.y; m.vertices[vi * 3 + 2] = (float)rel.z;
         m.normals[vi * 3 + 0] = (float)nrm.x; m.normals[vi * 3 + 1] = (float)nrm.y; m.normals[vi * 3 + 2] = (float)nrm.z;
-        unsigned char rgb[3];
-        Planet::colorFor(hM, rgb);
-        m.colors[vi * 4 + 0] = rgb[0]; m.colors[vi * 4 + 1] = rgb[1]; m.colors[vi * 4 + 2] = rgb[2]; m.colors[vi * 4 + 3] = 255;
+        planet_->surfaceColor(dir, hM, &m.colors[vi * 4]);
+        if (drainOceans) m.colors[vi * 4 + 3] = 255;   // no water shine on a drained sea floor
     };
 
     for (int j = 0; j < V; j++) {
@@ -122,7 +121,7 @@ void Terrain::build(TileNode& n) {
             Vec3d dV = P[k + B] - P[k - B];
             Vec3d nrm = dU.cross(dV).normalized();
             normals[j * V + i] = nrm;
-            put(j * V + i, P[k], nrm, H[k]);
+            put(j * V + i, P[k], nrm, H[k], D[k]);
         }
     }
 
@@ -141,7 +140,7 @@ void Terrain::build(TileNode& n) {
             int mi = edgeIndex(e, t);
             int i = mi % V, j = mi / V;
             int k = (j + 1) * B + (i + 1);
-            put(mainCount + e * V + t, P[k] - D[k] * skirt, normals[mi], H[k]);
+            put(mainCount + e * V + t, P[k] - D[k] * skirt, normals[mi], H[k], D[k]);
         }
     }
 

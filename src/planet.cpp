@@ -46,6 +46,7 @@ void Planet::generate(const PlanetSettings& s) {
     nSmall_.reseed(seed + 202);
     nWarp_.reseed(seed + 303);
     nDetail_.reseed(seed + 404);
+    nMoist_.reseed(seed + 505);
     contScale_ = 1.1 / std::max(0.2f, s.continentSize);
     strokes_.clear();
     group_ = 0;
@@ -199,6 +200,38 @@ PlanetStats Planet::computeStats() const {
     st.highestM = hi; st.deepestM = lo;
     st.areaMkm2 = 4 * kPi * R * R / 1e6;
     return st;
+}
+
+void Planet::surfaceColor(const Vec3d& d, double h, unsigned char out[4]) const {
+    struct C { double r, g, b; };
+    auto mix = [](C a, C b, double t) { t = clampd(t, 0, 1); return C{a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t}; };
+    double absLat = std::asin(std::min(1.0, std::fabs(d.y))) * 180 / kPi;
+    double m = fbm(nMoist_, d.x * 2.2, d.y * 2.2, d.z * 2.2, 4);   // large-scale variation, also wobbles the ice edge
+    double wobble = fbm(nMoist_, d.x * 7 + 5, d.y * 7, d.z * 7, 3);
+    double tempC = 27.0 - 52.0 * std::pow(absLat / 90.0, 1.5) - 6.5 * std::max(0.0, h) / 1000.0 + wobble * 9.0;
+    C c;
+    if (h <= 0) {
+        unsigned char rgb[3];
+        colorFor(h, rgb);
+        c = {(double)rgb[0], (double)rgb[1], (double)rgb[2]};
+        c = mix(c, C{222, 234, 242}, smoothstepd(-8, -13, tempC));   // sea ice
+        out[3] = tempC < -11 ? 255 : 128;                              // ice isn't shiny water
+    } else {
+        // Wet vs dry: large-scale noise, plus drier belts near 25 degrees latitude (like the Sahara)
+        double subtropic = std::exp(-std::pow((absLat - 25.0) / 10.0, 2.0));
+        double dry = clampd(0.3 - m * 1.8 + subtropic * 0.4 - smoothstepd(45, 65, absLat) * 0.3, 0, 1);
+        const C forest{40, 92, 42}, grass{118, 146, 68}, desert{206, 180, 122}, tundra{128, 126, 98},
+                rock{122, 102, 82}, grey{148, 146, 144}, snow{240, 243, 247}, sand{206, 194, 146};
+        c = mix(forest, grass, dry * 1.8);
+        c = mix(c, desert, smoothstepd(0.6, 0.85, dry));
+        c = mix(c, tundra, smoothstepd(6, -2, tempC));
+        c = mix(c, rock, smoothstepd(1500, 3200, h));
+        c = mix(c, grey, smoothstepd(3200, 4800, h));
+        c = mix(c, sand, smoothstepd(12, 2, h) * (1 - smoothstepd(4, -4, tempC)));  // beaches
+        c = mix(c, snow, smoothstepd(-3, -9, tempC));                               // snow and ice caps
+        out[3] = 255;
+    }
+    out[0] = (unsigned char)c.r; out[1] = (unsigned char)c.g; out[2] = (unsigned char)c.b;
 }
 
 void Planet::colorFor(double h, unsigned char rgb[3]) {
