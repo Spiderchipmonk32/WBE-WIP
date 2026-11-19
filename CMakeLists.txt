@@ -33,10 +33,11 @@ FetchContent_MakeAvailable(raylib raygui)
 add_executable(Worldbuilder
   src/main.cpp
   src/planet.cpp
-  src/terrain.cpp
+  src/tilemap.cpp
   src/raygui_impl.c)
 target_include_directories(Worldbuilder PRIVATE src ${raygui_SOURCE_DIR}/src)
-target_link_libraries(Worldbuilder PRIVATE raylib)
+find_package(Threads REQUIRED)
+target_link_libraries(Worldbuilder PRIVATE raylib Threads::Threads)
 
 if(MSVC)
   target_compile_options(Worldbuilder PRIVATE /W3 /utf-8)

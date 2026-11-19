@@ -101,23 +101,31 @@ int Planet::detailOctavesFor(double spacingKm, double radiusKm) {
     return std::max(1, std::min(22, o));
 }
 
+double Planet::applyStroke(const Stroke& s, const Vec3d& d, double h) {
+    double c = d.dot(s.dir);
+    if (c <= s.cosRadius) return h;
+    double ang = std::acos(std::min(1.0, c));
+    double f = 0.5 * (1 + std::cos(kPi * ang / s.angRadius));
+    switch (s.type) {
+        case BrushType::Raise: h += s.amount * f; break;
+        case BrushType::Lower: h -= s.amount * f; break;
+        default:               h += (s.targetM - h) * std::min(1.0, s.amount * f); break;
+    }
+    return clampd(h, kMinElev, kMaxElev);
+}
+
 double Planet::elevation(const Vec3d& d, int detailOctaves, const std::vector<int>* filt) const {
     double h = baseElevation(d);
     h += detail(d, h, detailOctaves);
-    auto apply = [&](const Stroke& s) {
-        double c = d.dot(s.dir);
-        if (c <= s.cosRadius) return;
-        double ang = std::acos(std::min(1.0, c));
-        double f = 0.5 * (1 + std::cos(kPi * ang / s.angRadius));
-        switch (s.type) {
-            case BrushType::Raise: h += s.amount * f; break;
-            case BrushType::Lower: h -= s.amount * f; break;
-            default:               h += (s.targetM - h) * std::min(1.0, s.amount * f); break;
-        }
-        h = clampd(h, kMinElev, kMaxElev);
-    };
-    if (filt) { for (int i : *filt) apply(strokes_[i]); }
-    else      { for (const Stroke& s : strokes_) apply(s); }
+    if (filt) { for (int i : *filt) h = applyStroke(strokes_[i], d, h); }
+    else      { for (const Stroke& s : strokes_) h = applyStroke(s, d, h); }
+    return h;
+}
+
+double Planet::elevationWith(const Vec3d& d, int detailOctaves, const std::vector<Stroke>& strokes) const {
+    double h = baseElevation(d);
+    h += detail(d, h, detailOctaves);
+    for (const Stroke& s : strokes) h = applyStroke(s, d, h);
     return h;
 }
 
@@ -187,6 +195,13 @@ void Planet::strokesNear(const Vec3d& dir, double angRadius, std::vector<int>& o
         if (angleBetween(dir, strokes_[i].dir) < angRadius + strokes_[i].angRadius) out.push_back(i);
 }
 
+std::vector<Stroke> Planet::strokesCopyNear(const Vec3d& dir, double angRadius) const {
+    std::vector<Stroke> out;
+    for (const Stroke& s : strokes_)
+        if (angleBetween(dir, s.dir) < angRadius + s.angRadius) out.push_back(s);
+    return out;
+}
+
 PlanetStats Planet::computeStats() const {
     PlanetStats st;
     int land = 0; double hi = -1e9, lo = 1e9;
@@ -228,7 +243,7 @@ void Planet::surfaceColor(const Vec3d& d, double h, unsigned char out[4]) const 
         c = mix(c, rock, smoothstepd(1500, 3200, h));
         c = mix(c, grey, smoothstepd(3200, 4800, h));
         c = mix(c, sand, smoothstepd(12, 2, h) * (1 - smoothstepd(4, -4, tempC)));  // beaches
-        c = mix(c, snow, smoothstepd(-3, -9, tempC));                               // snow and ice caps
+        c = mix(c, snow, smoothstepd(-8, -14, tempC));                              // snow and ice caps
         out[3] = 255;
     }
     out[0] = (unsigned char)c.r; out[1] = (unsigned char)c.g; out[2] = (unsigned char)c.b;

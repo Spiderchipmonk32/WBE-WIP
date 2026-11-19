@@ -1,7 +1,8 @@
 # Worldbuilder (C++)
 
-A zoomable 3D planet you can generate and sculpt, from orbit down to about 1 m of detail.
-This is step 1b of the worldbuilding app: the globe, level-of-detail terrain and sculpting.
+A detailed 2D world map of a round planet that you can generate and sculpt. The map wraps east to west,
+and you can zoom from the whole world down to about 20 m per pixel. Three map styles: Realistic, Fantasy
+(parchment) and Elevation.
 
 Built with [raylib](https://www.raylib.com) (graphics) and [raygui](https://github.com/raysan5/raygui) (UI).
 Both are downloaded automatically the first time you build, so you don't need to install them.
@@ -30,27 +31,21 @@ If anything goes wrong, open the Command Palette (Ctrl+Shift+P) and run **CMake:
 
 | Action | Control |
 | --- | --- |
-| Zoom | Mouse wheel |
-| Move across the planet | WASD, middle-drag, or left-drag with the Orbit tool |
-| Turn and tilt the view | Right-drag (Q / E also turn) |
-| Switch tool | 1 Orbit · 2 Raise · 3 Lower · 4 Smooth · 5 Flatten |
+| Zoom (towards the cursor) | Mouse wheel |
+| Move the map | Right-drag, middle-drag, WASD, or left-drag with the Pan tool |
+| Switch tool | 1 Pan · 2 Raise · 3 Lower · 4 Smooth · 5 Flatten |
 | Brush size | `[` and `]`, or the slider |
 | Sculpt | Left-drag with a brush tool |
 | Undo | Ctrl+Z |
-
-Tip: tilt the view toward the horizon (right-drag) and set height exaggeration to 1× when you're close
-to the ground, to see the terrain at its real scale.
 
 ## How it works
 
 | File | What it does |
 | --- | --- |
 | `src/planet.*` | Generates the planet. Elevation is a function of position, so it can be sampled at any detail. Brush strokes are stored as edit layers on top. |
-| `src/terrain.*` | The level-of-detail system: a cube projected onto a sphere, each face a quadtree of 33×33 tiles that split as you get closer (19 levels). |
+| `src/tilemap.*` | The 2D map: 256x256 tiles at 12 zoom levels, drawn on background threads and cached; renders the three styles. |
 | `src/noise.h` | Seeded 3D simplex noise. |
-| `src/main.cpp` | Window, camera, sculpting input, shaders and UI. |
-
-The world is drawn relative to the camera and positions are kept in double precision, so the image doesn't jitter at street level.
+| `src/main.cpp` | Window, map navigation, sculpting, grid, scale bar and UI. |
 
 ## Getting a ready-to-run .exe
 

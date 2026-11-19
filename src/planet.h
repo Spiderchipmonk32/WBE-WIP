@@ -42,6 +42,8 @@ public:
     // (use detailOctavesFor to match the sample spacing). strokeFilter limits which
     // edit strokes are tested (nullptr = all).
     double elevation(const Vec3d& dir, int detailOctaves, const std::vector<int>* strokeFilter = nullptr) const;
+    // Same, but using a private copy of the strokes (safe to call from worker threads).
+    double elevationWith(const Vec3d& dir, int detailOctaves, const std::vector<Stroke>& strokes) const;
     static int detailOctavesFor(double spacingKm, double radiusKm);
 
     // Sculpting
@@ -50,6 +52,7 @@ public:
     // Removes the last group; returns the areas it touched so they can be redrawn.
     std::vector<std::pair<Vec3d, double>> undo();
     void strokesNear(const Vec3d& dir, double angRadius, std::vector<int>& out) const;
+    std::vector<Stroke> strokesCopyNear(const Vec3d& dir, double angRadius) const;
     size_t strokeCount() const { return strokes_.size(); }
 
     PlanetStats computeStats() const;
@@ -62,6 +65,7 @@ private:
     double baseRaw(const Vec3d& d) const;
     double baseElevation(const Vec3d& d) const;
     double detail(const Vec3d& d, double baseM, int octaves) const;
+    static double applyStroke(const Stroke& s, const Vec3d& d, double h);
 
     PlanetSettings settings_;
     Simplex3 nCont_, nMtn_, nSmall_, nWarp_, nDetail_, nMoist_;

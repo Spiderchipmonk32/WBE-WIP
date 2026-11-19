@@ -1,143 +1,62 @@
-// Worldbuilder: step 1b, a zoomable globe from orbit down to street level.
+// Worldbuilder: 2D world map of a round planet, with generation, sculpting and map styles.
 #include "raylib.h"
-#include "raymath.h"
-#include "rlgl.h"
 #include "raygui.h"
 #include "planet.h"
-#include "terrain.h"
+#include "tilemap.h"
 #include <cmath>
 #include <algorithm>
-#include <vector>
-#include <cstdint>
 
-static const char* kVertexShader = R"(#version 330
-in vec3 vertexPosition;
-in vec3 vertexNormal;
-in vec4 vertexColor;
-uniform mat4 mvp;
-uniform mat4 matModel;
-out vec3 fragNormal;
-out vec4 fragColor;
-out vec3 fragPos;
-void main() {
-    fragNormal = vertexNormal;
-    fragColor = vertexColor;
-    fragPos = (matModel * vec4(vertexPosition, 1.0)).xyz;   // camera-relative position
-    gl_Position = mvp * vec4(vertexPosition, 1.0);
-}
-)";
+namespace {
 
-static const char* kFragmentShader = R"(#version 330
-in vec3 fragNormal;
-in vec4 fragColor;
-in vec3 fragPos;
-uniform vec3 sunDir;
-uniform vec3 fogColor;
-uniform float fogDensity;
-out vec4 finalColor;
-void main() {
-    vec3 n = normalize(fragNormal);
-    float diffuse = max(dot(n, sunDir), 0.0);
-    vec3 c = fragColor.rgb * (0.10 + 0.95 * diffuse);
-    if (fragColor.a < 0.9) {   // water: sun glint
-        vec3 v = normalize(-fragPos);
-        vec3 r = reflect(-sunDir, n);
-        float s = pow(max(dot(r, v), 0.0), 60.0);
-        c += vec3(1.0, 0.95, 0.85) * s * 0.6 * step(0.0, dot(n, sunDir));
-    }
-    float fog = 1.0 - exp(-length(fragPos) * fogDensity);
-    c = mix(c, fogColor, clamp(fog, 0.0, 0.65));
-    finalColor = vec4(c, 1.0);
-}
-)";
-
-// Simple pass-through vertex shader for the atmosphere and cloud shells (unit spheres).
-static const char* kShellVertex = R"(#version 330
-in vec3 vertexPosition;
-uniform mat4 mvp;
-uniform mat4 matModel;
-out vec3 localPos;
-out vec3 fragPos;
-void main() {
-    localPos = vertexPosition;
-    fragPos = (matModel * vec4(vertexPosition, 1.0)).xyz;
-    gl_Position = mvp * vec4(vertexPosition, 1.0);
-}
-)";
-
-// Atmosphere: glow based on how close each view ray passes to the planet.
-static const char* kAtmoFragment = R"(#version 330
-in vec3 localPos;
-in vec3 fragPos;
-uniform vec3 planetCenter;   // camera-relative
-uniform float planetR;
-uniform float atmoR;
-uniform vec3 sunDir;
-uniform float strength;
-out vec4 finalColor;
-void main() {
-    vec3 v = normalize(fragPos);
-    float t = dot(planetCenter, v);
-    vec3 closest = v * t - planetCenter;
-    float h = length(closest);
-    float glow = h > planetR ? pow(clamp(1.0 - (h - planetR) / (atmoR - planetR), 0.0, 1.0), 2.2)
-                             : pow(h / planetR, 6.0);
-    if (t < 0.0) glow = 0.0;
-    float sunSide = dot(normalize(closest), sunDir);
-    float light = clamp(sunSide * 0.9 + 0.3, 0.0, 1.0);
-    vec3 col = mix(vec3(1.0, 0.55, 0.3), vec3(0.35, 0.62, 1.0), clamp(sunSide * 2.5 + 0.6, 0.0, 1.0));
-    finalColor = vec4(col * glow * light * strength, 1.0);
-}
-)";
-
-// Decorative clouds from 3D value noise (real weather comes with the climate step).
-static const char* kCloudFragment = R"(#version 330
-in vec3 localPos;
-in vec3 fragPos;
-uniform vec3 sunDir;
-uniform vec3 offset;
-uniform float fade;
-out vec4 finalColor;
-float hash(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
-float vnoise(vec3 x) {
-    vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x), mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
-               mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x), mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
-}
-float fbm(vec3 p) { float a = 0.5, s = 0.0; for (int i = 0; i < 6; i++) { s += a * vnoise(p); p *= 2.03; a *= 0.5; } return s; }
-void main() {
-    vec3 n = normalize(localPos);
-    float lat = abs(n.y);
-    float bands = 0.06 * cos(lat * 9.0);                  // busier near the equator and mid-latitudes
-    float v = fbm(n * 2.6 + offset) * 0.75 + fbm(n * 9.0 + offset * 1.7) * 0.35 + bands;
-    float a = smoothstep(0.56, 0.74, v);
-    float light = 0.08 + 0.95 * max(dot(n, sunDir), 0.0);
-    finalColor = vec4(vec3(light), a * 0.85 * fade);
-}
-)";
-
-// Camera orbiting a point on the surface (like a map app): pan moves the point,
-// right-drag turns and tilts, scroll changes distance.
-struct GlobeCamera {
-    Vec3d targetDir = Vec3d{0.2, 0.35, 1.0}.normalized();
-    double distKm = 16000;
-    double yaw = 0;                 // heading, radians from north
-    double pitch = 89.0 * kPi / 180; // 90 = looking straight down
-};
-
-static void localFrame(const Vec3d& up, Vec3d& east, Vec3d& north) {
-    Vec3d ref = std::fabs(up.y) > 0.999 ? Vec3d{0, 0, 1} : Vec3d{0, 1, 0};
-    east = ref.cross(up).normalized();
-    north = up.cross(east);
-}
-
-static Vector3 toV3(const Vec3d& v) { return {(float)v.x, (float)v.y, (float)v.z}; }
-
-static const char* formatKm(double km) {
+const char* formatKm(double km) {
     if (km < 1.0) return TextFormat("%.0f m", km * 1000);
     if (km < 100.0) return TextFormat("%.1f km", km);
     return TextFormat("%.0f km", km);
 }
+
+double wrapLon(double lon) { return lon - 360.0 * std::floor((lon + 180.0) / 360.0); }
+
+struct Theme { Color bg, grid, text, panelNote; };
+Theme themeFor(MapStyle s) {
+    if (s == MapStyle::Fantasy) return {{214, 200, 164, 255}, {110, 80, 50, 90}, {70, 50, 30, 255}, {90, 70, 50, 255}};
+    return {{12, 16, 24, 255}, {255, 255, 255, 50}, {235, 238, 245, 255}, {150, 160, 175, 255}};
+}
+
+// Latitude/longitude grid with labels, step chosen to suit the zoom
+void drawGrid(const MapView& v, int sw, int sh, int left, Color c) {
+    static const double steps[] = {0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30};
+    double step = 30;
+    for (double s : steps) if (s * v.pxPerDeg >= 90) { step = s; break; }
+    double lonMin = v.centerLon - sw / 2.0 / v.pxPerDeg, lonMax = v.centerLon + sw / 2.0 / v.pxPerDeg;
+    double latMin = std::max(-90.0, v.centerLat - sh / 2.0 / v.pxPerDeg), latMax = std::min(90.0, v.centerLat + sh / 2.0 / v.pxPerDeg);
+    int yTop = (int)(sh / 2.0 - (latMax - v.centerLat) * v.pxPerDeg), yBot = (int)(sh / 2.0 - (latMin - v.centerLat) * v.pxPerDeg);
+    const char* fmt = step < 0.1 ? "%.2f" : (step < 1 ? "%.1f" : "%.0f");
+    for (double lon = std::floor(lonMin / step) * step; lon <= lonMax; lon += step) {
+        int x = (int)(sw / 2.0 + (lon - v.centerLon) * v.pxPerDeg);
+        DrawLine(x, yTop, x, yBot, c);
+        double w = wrapLon(lon);
+        if (x > left) DrawText(TextFormat(fmt, std::fabs(w)), x + 3, std::max(yTop, 0) + 50, 14, c);
+    }
+    for (double lat = std::ceil(latMin / step) * step; lat <= latMax; lat += step) {
+        int y = (int)(sh / 2.0 - (lat - v.centerLat) * v.pxPerDeg);
+        DrawLine(0, y, sw, y, c);
+        DrawText(TextFormat(fmt, std::fabs(lat)), left + 6, y + 3, 14, c);
+    }
+}
+
+void drawScaleBar(const MapView& v, double R, int x, int y, Color c) {
+    double kmPerPx = 111.195 * R / 6371.0 * std::cos(v.centerLat * kPi / 180) / v.pxPerDeg;
+    double target = kmPerPx * 160, nice = 1;
+    double mag = std::pow(10.0, std::floor(std::log10(target)));
+    for (double m : {1.0, 2.0, 5.0, 10.0}) if (m * mag <= target) nice = m * mag;
+    int len = (int)(nice / kmPerPx);
+    DrawRectangle(x, y, len, 4, c);
+    DrawRectangle(x, y - 6, 2, 10, c);
+    DrawRectangle(x + len - 2, y - 6, 2, 10, c);
+    DrawText(formatKm(nice), x, y - 26, 18, c);
+}
+
+} // namespace
 
 int main() {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
@@ -145,107 +64,58 @@ int main() {
     SetTargetFPS(144);
     GuiSetStyle(DEFAULT, TEXT_SIZE, 20);
 
-    Shader shader = LoadShaderFromMemory(kVertexShader, kFragmentShader);
-    shader.locs[SHADER_LOC_MATRIX_MODEL] = GetShaderLocation(shader, "matModel");
-    int locSun = GetShaderLocation(shader, "sunDir");
-    int locFogColor = GetShaderLocation(shader, "fogColor");
-    int locFogDensity = GetShaderLocation(shader, "fogDensity");
-    Material material = LoadMaterialDefault();
-    material.shader = shader;
-
-    // Atmosphere and cloud shells share one unit-sphere mesh, scaled when drawn
-    Mesh shellMesh = GenMeshSphere(1.0f, 96, 192);
-    Shader atmoShader = LoadShaderFromMemory(kShellVertex, kAtmoFragment);
-    atmoShader.locs[SHADER_LOC_MATRIX_MODEL] = GetShaderLocation(atmoShader, "matModel");
-    int locAtmoCenter = GetShaderLocation(atmoShader, "planetCenter");
-    int locAtmoR = GetShaderLocation(atmoShader, "planetR");
-    int locAtmoOuter = GetShaderLocation(atmoShader, "atmoR");
-    int locAtmoSun = GetShaderLocation(atmoShader, "sunDir");
-    int locAtmoStrength = GetShaderLocation(atmoShader, "strength");
-    Material atmoMat = LoadMaterialDefault();
-    atmoMat.shader = atmoShader;
-    Shader cloudShader = LoadShaderFromMemory(kShellVertex, kCloudFragment);
-    cloudShader.locs[SHADER_LOC_MATRIX_MODEL] = GetShaderLocation(cloudShader, "matModel");
-    int locCloudSun = GetShaderLocation(cloudShader, "sunDir");
-    int locCloudOffset = GetShaderLocation(cloudShader, "offset");
-    int locCloudFade = GetShaderLocation(cloudShader, "fade");
-    Material cloudMat = LoadMaterialDefault();
-    cloudMat.shader = cloudShader;
-
-    // Fixed starfield (directions on the sky)
-    std::vector<Vec3d> stars;
-    std::vector<unsigned char> starBright;
-    {
-        uint32_t st = 12345u;
-        auto rnd = [&st]() { st = st * 1664525u + 1013904223u; return (st >> 8) / 16777216.0; };
-        for (int i = 0; i < 2500; i++) {
-            double u = rnd() * 2 - 1, a = rnd() * 2 * kPi, s = std::sqrt(1 - u * u);
-            stars.push_back({s * std::cos(a), u, s * std::sin(a)});
-            starBright.push_back((unsigned char)(70 + 185 * std::pow(rnd(), 3.0)));
-        }
-    }
-
     PlanetSettings ui;
     Planet planet;
-    Terrain terrain;
     planet.generate(ui);
-    terrain.reset(&planet);
+    TileMap map(&planet);
     PlanetStats stats = planet.computeStats();
 
-    GlobeCamera gc;
-    bool seedEdit = false;
-    int tool = 0;                       // 0 orbit, 1 raise, 2 lower, 3 smooth, 4 flatten
-    float brushT = 0.849f;              // log slider: 5 m .. 3,000 km (default 400 km)
-    float strengthT = 0.851f;           // log slider: 0.1 .. 5,000 m/s (default 1,000)
-    float exag = terrain.exaggeration;
-    bool drain = false, sunFollows = true, painting = false, panning = false, turning = false;
-    bool showClouds = true, showAtmosphere = true;
+    MapView view;
+    view.pxPerDeg = GetScreenHeight() / 180.0 * 1.1;
+    bool seedEdit = false, painting = false, panning = false, showGrid = true;
+    int tool = 0;                 // 0 pan, 1 raise, 2 lower, 3 smooth, 4 flatten
+    int styleUi = 0;
+    float brushT = 0.80f;         // log slider: 50 m .. 3,000 km
+    float strengthT = 0.851f;     // log slider: 0.1 .. 5,000 m/s
     float radiusUi = ui.radiusKm, oceanUi = ui.oceanPercent, mountUi = ui.mountains, contUi = ui.continentSize;
 
     while (!WindowShouldClose()) {
         const float dt = GetFrameTime();
         const int sw = GetScreenWidth(), sh = GetScreenHeight();
         const double R = planet.radiusKm();
-        const double brushKm = 0.005 * std::pow(600000.0, (double)brushT);
+        const double brushKm = 0.05 * std::pow(60000.0, (double)brushT);
         const double strength = 0.1 * std::pow(50000.0, (double)strengthT);
         const Rectangle panel = {10, 10, 320, (float)sh - 20};
         const Vector2 mouse = GetMousePosition();
         const bool overPanel = CheckCollisionPointRec(mouse, panel);
+        const double minZoom = sh / 180.0, maxZoom = TileMap::TILE / 90.0 * (1 << TileMap::MAX_LEVEL) * 2;
 
-        // ---- Camera input ----
-        Vec3d up = gc.targetDir, east, north;
-        localFrame(up, east, north);
-        Vec3d fwd = north * std::cos(gc.yaw) + east * std::sin(gc.yaw);
-        Vec3d right = fwd.cross(up);
-        const double fov = 45.0 * kPi / 180;
-        const double angPerPixel = (2 * gc.distKm * std::tan(fov / 2) / sh) / R;
-
-        if (!overPanel) {
-            float wheel = GetMouseWheelMove();
-            if (wheel != 0) gc.distKm = clampd(gc.distKm * std::pow(0.85, wheel), 0.003, 4 * R);
+        // ---- Zoom (keeps the point under the cursor fixed) ----
+        float wheel = overPanel ? 0 : GetMouseWheelMove();
+        if (wheel != 0) {
+            double lon0 = view.centerLon + (mouse.x - sw / 2.0) / view.pxPerDeg;
+            double lat0 = view.centerLat - (mouse.y - sh / 2.0) / view.pxPerDeg;
+            view.pxPerDeg = clampd(view.pxPerDeg * std::pow(1.2, wheel), minZoom, maxZoom);
+            view.centerLon = lon0 - (mouse.x - sw / 2.0) / view.pxPerDeg;
+            view.centerLat = lat0 + (mouse.y - sh / 2.0) / view.pxPerDeg;
         }
-        // A drag only moves the globe if it started over the globe (not on the panel)
-        if (!overPanel && (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) || (tool == 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))))
+        // ---- Pan ----
+        if (!overPanel && (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) ||
+                           (tool == 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))))
             panning = true;
-        if (!IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) && !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) panning = false;
-        if (!overPanel && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) turning = true;
-        if (!IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) turning = false;
-        Vector2 md = GetMouseDelta();
+        if (!IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) && !IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !IsMouseButtonDown(MOUSE_BUTTON_RIGHT))
+            panning = false;
         if (panning && !painting) {
-            gc.targetDir = (gc.targetDir + (right * (-md.x) + fwd * md.y) * angPerPixel).normalized();
-        }
-        if (turning) {
-            gc.yaw += md.x * 0.005;
-            gc.pitch = clampd(gc.pitch + md.y * 0.005, 5.0 * kPi / 180, 89.5 * kPi / 180);
+            Vector2 md = GetMouseDelta();
+            view.centerLon -= md.x / view.pxPerDeg;
+            view.centerLat += md.y / view.pxPerDeg;
         }
         if (!seedEdit) {
-            double k = angPerPixel * 600 * dt;
-            if (IsKeyDown(KEY_W)) gc.targetDir = (gc.targetDir + fwd * k).normalized();
-            if (IsKeyDown(KEY_S)) gc.targetDir = (gc.targetDir - fwd * k).normalized();
-            if (IsKeyDown(KEY_D)) gc.targetDir = (gc.targetDir + right * k).normalized();
-            if (IsKeyDown(KEY_A)) gc.targetDir = (gc.targetDir - right * k).normalized();
-            if (IsKeyDown(KEY_Q)) gc.yaw -= 1.5 * dt;
-            if (IsKeyDown(KEY_E)) gc.yaw += 1.5 * dt;
+            double k = 600.0 * dt / view.pxPerDeg;
+            if (IsKeyDown(KEY_W)) view.centerLat += k;
+            if (IsKeyDown(KEY_S)) view.centerLat -= k;
+            if (IsKeyDown(KEY_A)) view.centerLon -= k;
+            if (IsKeyDown(KEY_D)) view.centerLon += k;
             if (IsKeyPressed(KEY_ONE)) tool = 0;
             if (IsKeyPressed(KEY_TWO)) tool = 1;
             if (IsKeyPressed(KEY_THREE)) tool = 2;
@@ -254,170 +124,57 @@ int main() {
             if (IsKeyPressed(KEY_LEFT_BRACKET)) brushT = std::max(0.f, brushT - 0.03f);
             if (IsKeyPressed(KEY_RIGHT_BRACKET)) brushT = std::min(1.f, brushT + 0.03f);
         }
+        view.centerLon = wrapLon(view.centerLon);
+        double halfH = sh / 2.0 / view.pxPerDeg;
+        view.centerLat = halfH >= 90 ? 0 : clampd(view.centerLat, -90 + halfH, 90 - halfH);
 
-        // ---- Camera position (double precision, km) ----
-        up = gc.targetDir;
-        localFrame(up, east, north);
-        fwd = north * std::cos(gc.yaw) + east * std::sin(gc.yaw);
-        const double lodSpacing = std::max(0.001, gc.distKm / 200);
-        Vec3d targetPos = up * (R + terrain.displayHeightKm(up, lodSpacing));
-        Vec3d camPos = targetPos + (fwd * (-std::cos(gc.pitch)) + up * std::sin(gc.pitch)) * gc.distKm;
-        {   // never go below the ground
-            Vec3d cdir = camPos.normalized();
-            double minR = R + terrain.displayHeightKm(cdir, lodSpacing) + 0.002;
-            if (camPos.length() < minR) camPos = cdir * minR;
-        }
-        Vec3d view = (targetPos - camPos).normalized();
-        Vec3d camRight = view.cross(up).normalized();
-        Vec3d camUp = camRight.cross(view);
-        double groundUnderCam = terrain.displayHeightKm(camPos.normalized(), lodSpacing);
-        double altitude = camPos.length() - R - groundUnderCam;
-
-        Camera3D cam = {};
-        cam.position = {0, 0, 0};          // the world is drawn relative to the camera
-        cam.target = toV3(view);
-        cam.up = toV3(camUp);
-        cam.fovy = 45;
-        cam.projection = CAMERA_PERSPECTIVE;
-
-        // ---- Mouse picking on the planet ----
-        bool hit = false;
-        Vec3d hitDir;
-        if (!overPanel) {
-            Ray ray = GetScreenToWorldRay(mouse, cam);
-            Vec3d O = camPos, Dd{ray.direction.x, ray.direction.y, ray.direction.z};
-            double r = R;
-            for (int it = 0; it < 5; it++) {
-                double b = O.dot(Dd), c = O.dot(O) - r * r, disc = b * b - c;
-                if (disc < 0) break;
-                double t = c > 0 ? -b - std::sqrt(disc) : -b + std::sqrt(disc);
-                if (t < 0) break;
-                hitDir = (O + Dd * t).normalized();
-                hit = true;
-                r = R + terrain.displayHeightKm(hitDir, std::max(0.001, brushKm / 40));
-            }
-        }
+        // ---- What's under the mouse ----
+        double mLon = wrapLon(view.centerLon + (mouse.x - sw / 2.0) / view.pxPerDeg);
+        double mLat = view.centerLat - (mouse.y - sh / 2.0) / view.pxPerDeg;
+        bool hit = !overPanel && std::fabs(mLat) <= 90;
+        Vec3d hitDir = TileMap::dirFromLatLon(clampd(mLat, -90, 90), mLon);
 
         // ---- Sculpting ----
-        if (tool > 0 && !overPanel && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (tool > 0 && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             painting = true;
             planet.beginStrokeGroup((BrushType)tool, hitDir, brushKm);
         }
         if (painting && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && hit) {
             double amount = (tool == 1 || tool == 2) ? strength * dt : std::min(1.0, dt * 3 * strength / 1000);
             planet.addDab((BrushType)tool, hitDir, brushKm, amount);
-            terrain.markDirty(hitDir, brushKm * 1.2);
+            map.invalidate(hitDir, brushKm * 1.1);
         }
         if (painting && !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             painting = false;
             stats = planet.computeStats();
         }
-        if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && IsKeyPressed(KEY_Z)) {
-            for (auto& a : planet.undo()) terrain.markDirty(a.first, a.second * 1.2);
+        auto doUndo = [&]() {
+            for (auto& a : planet.undo()) map.invalidate(a.first, a.second * 1.1);
             stats = planet.computeStats();
-        }
+        };
+        if ((IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) && IsKeyPressed(KEY_Z)) doUndo();
 
-        terrain.update(camPos);
+        map.update(view, sw, sh);
 
-        // ---- Render ----
-        double skyT = 1.0 - smoothstepd(30, 400, altitude);
-        Color space = {8, 11, 18, 255}, sky = {135, 170, 215, 255};
-        Color bg = {(unsigned char)(space.r + (sky.r - space.r) * skyT), (unsigned char)(space.g + (sky.g - space.g) * skyT),
-                    (unsigned char)(space.b + (sky.b - space.b) * skyT), 255};
-        float fogColor[3] = {bg.r / 255.f, bg.g / 255.f, bg.b / 255.f};
-        float fogDensity = altitude < 1500 ? (float)((1.0 / (600 + altitude * 3)) * (1 - altitude / 1500)) : 0.f;
-        // Sun from the upper left of the view, so the day/night line shows on the globe's right edge
-        Vec3d sun = sunFollows ? (up * 0.55 + camRight * (-0.7) + camUp * 0.45).normalized() : Vec3d{0.6, 0.35, 0.7}.normalized();
-        float sunV[3] = {(float)sun.x, (float)sun.y, (float)sun.z};
-        SetShaderValue(shader, locSun, sunV, SHADER_UNIFORM_VEC3);
-        SetShaderValue(atmoShader, locAtmoSun, sunV, SHADER_UNIFORM_VEC3);
-        SetShaderValue(cloudShader, locCloudSun, sunV, SHADER_UNIFORM_VEC3);
-        SetShaderValue(shader, locFogColor, fogColor, SHADER_UNIFORM_VEC3);
-        SetShaderValue(shader, locFogDensity, &fogDensity, SHADER_UNIFORM_FLOAT);
-
-        double D = camPos.length();
-        double horizonDist = std::sqrt(std::max(0.0, D * D - R * R));
-        double hMax = terrain.maxDisplayKm();
-        double farPlane = horizonDist + std::sqrt((R + hMax) * (R + hMax) - R * R) + 50;
-        double nearPlane = clampd(altitude * 0.25, 0.0005, 1000);
-        rlSetClipPlanes(nearPlane, std::max(farPlane, nearPlane * 10));
-
+        // ---- Draw ----
+        Theme th = themeFor(map.style());
         BeginDrawing();
-        ClearBackground(bg);
-        if (skyT < 0.99) {   // stars, fading out as the sky turns blue
-            for (size_t i = 0; i < stars.size(); i++) {
-                if (stars[i].dot(view) < 0.3) continue;
-                Vector2 s = GetWorldToScreen(toV3(stars[i] * 100.0), cam);
-                unsigned char b = (unsigned char)(starBright[i] * (1 - skyT));
-                DrawRectangle((int)s.x, (int)s.y, b > 200 ? 2 : 1, b > 200 ? 2 : 1, Color{b, b, (unsigned char)std::min(255, b + 15), 255});
-            }
+        ClearBackground(th.bg);
+        map.draw(view, sw, sh);
+        if (showGrid) drawGrid(view, sw, sh, (int)(panel.x + panel.width), th.grid);
+        if (hit && tool > 0) {   // brush outline (an ellipse, because the map stretches east-west away from the equator)
+            double kmPerDeg = 111.195 * R / 6371.0;
+            float ry = (float)(brushKm / kmPerDeg * view.pxPerDeg);
+            float rx = (float)(ry / std::max(0.02, std::cos(mLat * kPi / 180)));
+            DrawEllipseLines((int)mouse.x, (int)mouse.y, rx, ry, map.style() == MapStyle::Fantasy ? Color{60, 40, 25, 255} : RAYWHITE);
         }
-        BeginMode3D(cam);
-        rlDisableBackfaceCulling();
-        terrain.draw(camPos, material);
-        rlEnableBackfaceCulling();
-
-        Vec3d centerRel = -camPos;   // planet centre, relative to the camera
-        // Clouds: hidden when you're close to the ground
-        double cloudR = R + std::max(12.0, terrain.maxDisplayKm() * 0.25);
-        float cloudFade = (float)smoothstepd(cloudR - R + 40, (cloudR - R) * 4 + 400, altitude);
-        if (showClouds && cloudFade > 0.01f) {
-            float off[3] = {(float)(ui.seed % 997) * 0.37f + (float)GetTime() * 0.004f, (float)(ui.seed % 389) * 0.53f, 11.0f};
-            SetShaderValue(cloudShader, locCloudOffset, off, SHADER_UNIFORM_VEC3);
-            SetShaderValue(cloudShader, locCloudFade, &cloudFade, SHADER_UNIFORM_FLOAT);
-            rlDrawRenderBatchActive();
-            rlDisableDepthMask();
-            DrawMesh(shellMesh, cloudMat, MatrixMultiply(MatrixScale((float)cloudR, (float)cloudR, (float)cloudR),
-                                                         MatrixTranslate((float)centerRel.x, (float)centerRel.y, (float)centerRel.z)));
-            rlDrawRenderBatchActive();
-            rlEnableDepthMask();
-        }
-        // Atmosphere glow: drawn over everything, added on top of the colours below
-        double atmoR = R * 1.025 + terrain.maxDisplayKm() * 0.3;
-        float atmoStrength = (float)(0.85 * smoothstepd(atmoR - R, (atmoR - R) * 5, altitude));
-        if (showAtmosphere && atmoStrength > 0.01f) {
-            float c3[3] = {(float)centerRel.x, (float)centerRel.y, (float)centerRel.z};
-            float pr = (float)R, ar = (float)atmoR;
-            SetShaderValue(atmoShader, locAtmoCenter, c3, SHADER_UNIFORM_VEC3);
-            SetShaderValue(atmoShader, locAtmoR, &pr, SHADER_UNIFORM_FLOAT);
-            SetShaderValue(atmoShader, locAtmoOuter, &ar, SHADER_UNIFORM_FLOAT);
-            SetShaderValue(atmoShader, locAtmoStrength, &atmoStrength, SHADER_UNIFORM_FLOAT);
-            rlDrawRenderBatchActive();
-            rlDisableDepthTest();
-            rlSetCullFace(RL_CULL_FACE_FRONT);   // inside faces: one layer covering the whole disc
-            BeginBlendMode(BLEND_ADDITIVE);
-            DrawMesh(shellMesh, atmoMat, MatrixMultiply(MatrixScale((float)atmoR, (float)atmoR, (float)atmoR),
-                                                        MatrixTranslate((float)centerRel.x, (float)centerRel.y, (float)centerRel.z)));
-            EndBlendMode();
-            rlSetCullFace(RL_CULL_FACE_BACK);
-            rlEnableDepthTest();
-        }
-        if (hit && tool > 0) {   // brush outline
-            rlDrawRenderBatchActive();
-            rlDisableDepthTest();
-            double a = brushKm / R;
-            Vec3d e1 = hitDir.cross(std::fabs(hitDir.y) < 0.9 ? Vec3d{0, 1, 0} : Vec3d{1, 0, 0}).normalized();
-            Vec3d e2 = hitDir.cross(e1);
-            const int N = 64;
-            Vec3d prev;
-            for (int k = 0; k <= N; k++) {
-                double th = 2 * kPi * k / N;
-                Vec3d d = (hitDir * std::cos(a) + (e1 * std::cos(th) + e2 * std::sin(th)) * std::sin(a)).normalized();
-                Vec3d p = d * (R + terrain.displayHeightKm(d, std::max(0.001, brushKm / 40)) + brushKm * 0.002) - camPos;
-                if (k > 0) DrawLine3D(toV3(prev), toV3(p), RAYWHITE);
-                prev = p;
-            }
-            rlDrawRenderBatchActive();
-            rlEnableDepthTest();
-        }
-        EndMode3D();
 
         // ---- UI panel ----
         GuiPanel(panel, NULL);
         float x = 24, w = 292, y = 22;
         auto label = [&](const char* t) { GuiLabel(Rectangle{x, y, w, 22}, t); y += 24; };
         auto heading = [&](const char* t) { y += 6; GuiLabel(Rectangle{x, y, w, 22}, t); y += 28; };
-        auto slider = [&](float* v, float mn, float mx) { GuiSliderBar(Rectangle{x, y, w, 20}, NULL, NULL, v, mn, mx); y += 28; };
+        auto slider = [&](float* val, float mn, float mx) { GuiSliderBar(Rectangle{x, y, w, 20}, NULL, NULL, val, mn, mx); y += 28; };
 
         heading("PLANET");
         GuiLabel(Rectangle{x, y, 60, 28}, "Seed");
@@ -431,23 +188,18 @@ int main() {
         bool genClicked = GuiButton(Rectangle{x, y, w, 34}, "Generate planet");
         y += 42;
 
+        heading("MAP STYLE");
+        GuiToggleGroup(Rectangle{x, y, 95, 28}, "Realistic;Fantasy;Elevation", &styleUi);
+        y += 36;
+        GuiCheckBox(Rectangle{x, y, 22, 22}, "Latitude/longitude grid", &showGrid); y += 30;
+
         heading("SCULPT");
-        GuiToggleGroup(Rectangle{x, y, 95, 28}, "Orbit;Raise;Lower\nSmooth;Flatten", &tool);
+        GuiToggleGroup(Rectangle{x, y, 95, 28}, "Pan;Raise;Lower\nSmooth;Flatten", &tool);
         y += 64;
         label(TextFormat("Brush radius: %s", formatKm(brushKm))); slider(&brushT, 0, 1);
         label(TextFormat("Strength: %.1f m/s", strength)); slider(&strengthT, 0, 1);
-        if (GuiButton(Rectangle{x, y, w, 30}, "Undo (Ctrl+Z)")) {
-            for (auto& a : planet.undo()) terrain.markDirty(a.first, a.second * 1.2);
-            stats = planet.computeStats();
-        }
+        if (GuiButton(Rectangle{x, y, w, 30}, "Undo (Ctrl+Z)")) doUndo();
         y += 38;
-
-        heading("VIEW");
-        label(TextFormat("Height exaggeration: %.0fx", exag)); slider(&exag, 1, 50);
-        GuiCheckBox(Rectangle{x, y, 22, 22}, "Drain oceans", &drain); y += 30;
-        GuiCheckBox(Rectangle{x, y, 22, 22}, "Sun follows camera", &sunFollows); y += 30;
-        GuiCheckBox(Rectangle{x, y, 22, 22}, "Clouds", &showClouds);
-        GuiCheckBox(Rectangle{x + 140, y, 22, 22}, "Atmosphere", &showAtmosphere); y += 34;
 
         heading("STATS");
         label(TextFormat("Land: %.1f%%", stats.landPercent));
@@ -455,43 +207,39 @@ int main() {
         label(TextFormat("Deepest: %.0f m", stats.deepestM));
         label(TextFormat("Area: %.1fM km2", stats.areaMkm2));
 
+        if ((MapStyle)styleUi != map.style()) map.setStyle((MapStyle)styleUi);
         if (randomClicked) { ui.seed = GetRandomValue(0, 999999); genClicked = true; }
         if (genClicked) {
             ui.radiusKm = std::round(radiusUi); ui.oceanPercent = oceanUi; ui.mountains = mountUi; ui.continentSize = contUi;
+            map.waitIdle();          // background threads must stop reading the old planet first
             planet.generate(ui);
-            terrain.reset(&planet);
+            map.reset();
             stats = planet.computeStats();
-            gc.distKm = std::min(gc.distKm, 4.0 * planet.radiusKm());
         }
-        if (std::fabs(exag - terrain.exaggeration) > 0.01f) { terrain.exaggeration = std::round(exag); terrain.markAllDirty(); }
-        if (drain != terrain.drainOceans) { terrain.drainOceans = drain; terrain.markAllDirty(); }
 
         // ---- Readouts ----
-        int fontSize = 20;
-        const char* info = TextFormat("Altitude %s   Tiles %d   Building %d   %d FPS",
-                                      formatKm(std::max(0.0, altitude)), terrain.drawnTiles(), terrain.pendingBuilds(), GetFPS());
-        int iw = MeasureText(info, fontSize);
+        const int fs = 20;
+        double kmPerPx = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
+        const char* info = TextFormat("1 px = %s   Tiles %d   Drawing %d   %d FPS", formatKm(kmPerPx), map.cached(), map.pending(), GetFPS());
+        int iw = MeasureText(info, fs);
         DrawRectangle(sw - iw - 30, 10, iw + 20, 34, Fade(BLACK, 0.55f));
-        DrawText(info, sw - iw - 20, 17, fontSize, RAYWHITE);
+        DrawText(info, sw - iw - 20, 17, fs, RAYWHITE);
         if (hit) {
-            double lat = std::asin(hitDir.y) * 180 / kPi, lon = std::atan2(hitDir.x, hitDir.z) * 180 / kPi;
-            double e = planet.elevation(hitDir, Planet::detailOctavesFor(std::max(0.001, altitude / 300), R));
-            const char* t = TextFormat("%.4f %c, %.4f %c   %s %.0f m", std::fabs(lat), lat >= 0 ? 'N' : 'S', std::fabs(lon),
-                                       lon >= 0 ? 'E' : 'W', e > 0 ? "Elevation" : "Depth", std::fabs(e));
-            int tw = MeasureText(t, fontSize);
+            double spacing = std::max(0.0005, kmPerPx);
+            double e = planet.elevation(hitDir, Planet::detailOctavesFor(spacing, R));
+            const char* t = TextFormat("%.4f %c, %.4f %c   %s %.0f m", std::fabs(mLat), mLat >= 0 ? 'N' : 'S', std::fabs(mLon),
+                                       mLon >= 0 ? 'E' : 'W', e > 0 ? "Elevation" : "Depth", std::fabs(e));
+            int tw = MeasureText(t, fs);
             DrawRectangle(sw - tw - 30, sh - 44, tw + 20, 34, Fade(BLACK, 0.55f));
-            DrawText(t, sw - tw - 20, sh - 37, fontSize, RAYWHITE);
+            DrawText(t, sw - tw - 20, sh - 37, fs, RAYWHITE);
         }
-        const char* help = "Scroll: zoom   Right-drag: turn/tilt   WASD or middle-drag: move   Q/E: turn   1-5: tools   [ ]: brush size";
-        DrawText(help, (int)panel.width + 30, sh - 30, 18, Fade(RAYWHITE, 0.75f));
+        drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
+        DrawText("Scroll: zoom   Drag (Pan tool), right or middle-drag: move   WASD: move   1-5: tools   [ ]: brush size",
+                 (int)(panel.x + panel.width) + 24, sh - 28, 16, Fade(th.text, 0.8f));
         EndDrawing();
     }
 
-    terrain.clear();
-    UnloadMaterial(material);   // also unloads the shader
-    UnloadMaterial(atmoMat);
-    UnloadMaterial(cloudMat);
-    UnloadMesh(shellMesh);
+    map.shutdown();
     CloseWindow();
     return 0;
 }
