@@ -20,6 +20,7 @@ struct PlanetSettings {
     float tempOffset = 0.f;       // degC added everywhere (ice ages, hothouse worlds)
     float rainMultiplier = 1.f;
     float seaLevel = 0.f;         // metres: positive floods coasts, negative exposes shelves
+    float erosion = 1.f;          // how much rivers and time wear the land down
 };
 
 enum class BrushType { Raise = 1, Lower = 2, Smooth = 3, Flatten = 4 };
@@ -71,6 +72,7 @@ public:
     PlanetStats computeStats() const;
     // Large-scale uplift from tectonics (metres on the World grid); nullptr = none
     void setUplift(const std::vector<float>* uplift) { uplift_ = uplift; }
+    void setErosion(const std::vector<float>* erosion) { erosion_ = erosion; }
     // Climate fields on the World grid (sea-level temperature, annual rain) used for map colours
     void setClimate(const std::vector<float>* tempSeaLevel, const std::vector<float>* rainYear) { climT_ = tempSeaLevel; climR_ = rainYear; }
     static void colorFor(double elevM, unsigned char rgb[3]);
@@ -90,6 +92,7 @@ private:
     std::vector<Stroke> strokes_;
     std::vector<Stroke> eventStrokes_;
     const std::vector<float>* uplift_ = nullptr;
+    const std::vector<float>* erosion_ = nullptr;
     const std::vector<float>* climT_ = nullptr;
     const std::vector<float>* climR_ = nullptr;
     int group_ = 0;

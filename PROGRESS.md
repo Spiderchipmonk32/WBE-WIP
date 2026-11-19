@@ -5,6 +5,12 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Erosion
+- New **Erosion** slider (World tab). Rivers carve valleys (deeper for bigger rivers) and time wears
+  mountains down according to the age of their rock: ancient ranges become rolling forested hills,
+  young collision ranges stay jagged and snowy. Rivers and lakes are recalculated on the eroded land.
+- Salt flats now have soft, ragged edges instead of square ones.
+
 ### More sculpting, diplomacy, living routes, storms, bookmarks and exports
 - **Sculpt tab**: *Make land* and *Make sea* brushes (paint coastlines directly), and one-click stamps
   for an **impact crater**, a **volcano** and a **mesa** (size = brush radius).

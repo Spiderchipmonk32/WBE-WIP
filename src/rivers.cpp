@@ -85,6 +85,16 @@ void World::generateRivers() {
         }
     }
 
+    // Soften salt flat edges so they don't look like squares
+    for (int pass = 0; pass < 2; pass++) {
+        std::vector<float> s2(N);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                int i = y * W + x;
+                s2[i] = (saltMask[i] * 4 + saltMask[idx(x + 1, y)] + saltMask[idx(x - 1, y)] + saltMask[idx(x, y + 1)] + saltMask[idx(x, y - 1)]) / 8;
+            }
+        saltMask.swap(s2);
+    }
     // Spread each lake's level one cell outwards so the shoreline can follow the fine terrain
     {
         std::vector<float> ls = lakeSurface;
@@ -163,4 +173,36 @@ void World::generateRivers() {
             p = (p + off * (ck / radiusKm * 0.35)).normalized();
         }
     }
+}
+
+void World::generateErosion(double strength) {
+    const int N = W * H;
+    erosion.assign(N, 0);
+    if (strength <= 0 || discharge.empty()) return;
+    std::vector<float> e(N, 0);
+    for (int i = 0; i < N; i++) {
+        if (elev[i] <= 0) continue;
+        // rivers cut valleys: deeper for bigger rivers, more where the land is high above the sea
+        double q = discharge[i];
+        double cut = q > 20 ? std::min(450.0, 55.0 * std::log10(1 + q / 40.0)) * smoothstepd(0, 600, elev[i]) : 0;
+        // time wears mountains down: old rock is lower and smoother
+        double age = rockAge.empty() ? 100 : rockAge[i];
+        double wear = std::max(0.0f, elev[i] - 400.0f) * 0.32 * smoothstepd(150, 1500, age);
+        e[i] = (float)(-(cut + wear) * strength);
+    }
+    // valleys are wider than one cell: spread a little
+    for (int pass = 0; pass < 2; pass++) {
+        std::vector<float> e2(N);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                int i = y * W + x;
+                float m = e[i];
+                float avg = (e[idx(x + 1, y)] + e[idx(x - 1, y)] + e[idx(x, y + 1)] + e[idx(x, y - 1)]) / 4;
+                e2[i] = std::min(m, (m * 2 + avg) / 3);
+            }
+        e.swap(e2);
+    }
+    // never carve land below sea level (that would turn valleys into fjords everywhere)
+    for (int i = 0; i < N; i++) if (elev[i] > 0) e[i] = std::max(e[i], -(elev[i] - 15.0f)); else e[i] = 0;
+    erosion.swap(e);
 }

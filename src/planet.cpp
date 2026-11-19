@@ -53,6 +53,7 @@ void Planet::generate(const PlanetSettings& s) {
     eventStrokes_.clear();
     group_ = 0;
     uplift_ = nullptr;
+    erosion_ = nullptr;
     climT_ = climR_ = nullptr;
 
     // Sea level is chosen so the requested share of the surface is ocean.
@@ -91,6 +92,7 @@ double Planet::baseElevation(const Vec3d& d) const {
     if (uplift_) {
         double lat = std::asin(clampd(d.y, -1, 1)) * 180.0 / kPi, lon = std::atan2(d.x, d.z) * 180.0 / kPi;
         h += World::sampleCubic(*uplift_, lat, lon);
+        if (erosion_) h += World::sampleCubic(*erosion_, lat, lon);
     }
     return h;
 }

@@ -362,8 +362,9 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
                 if (j.style == MapStyle::Fantasy) col = mixc(RGB{199, 210, 196}, RGB{62, 44, 28}, lakeDepth < 25 ? 0.5 : 0.0);
                 else if (j.style == MapStyle::Elevation) col = RGB{80, 140, 210};
                 else col = mixc(RGB{80, 150, 200}, RGB{30, 70, 140}, smoothstepd(0, 300, lakeDepth));
-            } else if (salt > 0.5 && j.style != MapStyle::Elevation) {
-                col = mixc(col, RGB{236, 232, 220}, smoothstepd(0.5, 0.8, salt) * 0.85);
+            } else if (salt > 0.3 && j.style != MapStyle::Elevation) {
+                double edge = salt + 0.15 * paper_(lon * 40, lat * 40, 3.3);   // ragged shoreline
+                col = mixc(col, RGB{236, 232, 220}, smoothstepd(0.4, 0.55, edge) * 0.85);
             }
             if (political) {
                 int o = own[c];

@@ -170,6 +170,10 @@ struct App {
         world.generateClimate(ui.axialTilt, ui.tempOffset, ui.rainMultiplier);
         planet.setClimate(&world.tempSeaLevel, &world.rainfallYear);
         world.generateRivers();
+        world.generateErosion(ui.erosion);
+        planet.setErosion(&world.erosion);
+        world.sampleElevation(planet);
+        world.generateRivers();   // again, on the eroded land
         world.generateHabitability();
         world.generateResources(ui.seed);
         doc = Document{};
@@ -244,6 +248,7 @@ int main() {
     float monthUi = 12, tiltUi = app.ui.axialTilt;
     float tempOffUi = app.ui.tempOffset, rainMulUi = app.ui.rainMultiplier, seaUi = app.ui.seaLevel;
     int templateUi = 0;
+    float erosionUi = app.ui.erosion;
     char nameBuf[64] = "my world";
     bool nameEdit = false, autosave = true;
     int savedScroll = 0, savedActive = -1;
@@ -254,7 +259,7 @@ int main() {
     auto syncSliders = [&]() {
         radiusUi = app.ui.radiusKm; oceanUi = app.ui.oceanPercent; mountUi = app.ui.mountains; contUi = app.ui.continentSize;
         platesUi = (float)app.ui.plateCount; activityUi = app.ui.tectonicActivity; tiltUi = app.ui.axialTilt;
-        tempOffUi = app.ui.tempOffset; rainMulUi = app.ui.rainMultiplier; seaUi = app.ui.seaLevel;
+        tempOffUi = app.ui.tempOffset; rainMulUi = app.ui.rainMultiplier; seaUi = app.ui.seaLevel; erosionUi = app.ui.erosion;
     };
     auto setStatus = [&](const std::string& t) { status = t; statusTime = GetTime(); };
     int nationSel = -1, nationScroll = 0, polTool = 0;
@@ -842,6 +847,7 @@ int main() {
             L.heading("TECTONICS");
             L.label(TextFormat("Plates: %d", (int)platesUi)); L.slider(&platesUi, 4, 30);
             L.label(TextFormat("Tectonic activity: %.1f", activityUi)); L.slider(&activityUi, 0, 2);
+            L.label(TextFormat("Erosion: %.1f", erosionUi)); L.slider(&erosionUi, 0, 2.5f);
             bool genClicked = L.button("Generate planet", 34);
             L.heading("STATS");
             L.label(TextFormat("Land: %.1f%%", app.stats.landPercent));
@@ -855,6 +861,7 @@ int main() {
                 app.ui.radiusKm = std::round(radiusUi); app.ui.oceanPercent = oceanUi; app.ui.mountains = mountUi;
                 app.ui.continentSize = contUi; app.ui.plateCount = (int)platesUi; app.ui.tectonicActivity = activityUi;
                 app.ui.axialTilt = tiltUi; app.ui.tempOffset = tempOffUi; app.ui.rainMultiplier = rainMulUi; app.ui.seaLevel = seaUi;
+                app.ui.erosion = erosionUi;
                 app.regenerate();
             }
         } else if (tab == 1) {

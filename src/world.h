@@ -118,6 +118,10 @@ public:
     std::vector<River> rivers;
     float maxDischarge = 0;
 
+    // Erosion (rivers.cpp): valleys carved by rivers, old mountains worn down. Metres, added to the terrain.
+    void generateErosion(double strength);
+    std::vector<float> erosion;
+
     // ---- people (politics.cpp) ----
     void generateHabitability();
     std::vector<float> habitability;   // 0..1: how good a place is to live (climate, water, land, coast)
