@@ -101,6 +101,7 @@ struct App {
         world.sampleElevation(planet);
         world.generateClimate(ui.axialTilt);
         planet.setClimate(&world.tempSeaLevel, &world.rainfallYear);
+        world.generateRivers();
         world.generateResources(ui.seed);
         world.selectedFavor.clear();
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
@@ -112,6 +113,7 @@ struct App {
         map->waitIdle();
         world.sampleElevation(planet);
         world.generateClimate(ui.axialTilt);
+        world.generateRivers();
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
         map->invalidateAll();
     }
@@ -134,7 +136,7 @@ int main() {
 
     MapView& view = app.view;
     view.pxPerDeg = GetScreenHeight() / 180.0 * 1.1;
-    bool seedEdit = false, painting = false, panning = false, showGrid = true, showVolcanoes = true;
+    bool seedEdit = false, painting = false, panning = false, showGrid = true, showVolcanoes = true, showRivers = true;
     int tab = 0;
     int tool = 0;
     int styleUi = 0;
@@ -234,6 +236,28 @@ int main() {
         BeginDrawing();
         ClearBackground(th.bg);
         map.draw(view, sw, sh);
+        if (showRivers) {
+            double kmPerPxR = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
+            double thr = std::max(40.0, 2500.0 * std::pow(5.0 / view.pxPerDeg, 1.3));
+            Color rc = map.style() == MapStyle::Fantasy ? Color{70, 95, 125, 255} : Color{45, 105, 200, 255};
+            for (const World::River& r : app.world.rivers) {
+                if (r.q.back() < thr) continue;
+                Vector2 prev{0, 0}; bool havePrev = false;
+                for (size_t k = 0; k < r.pts.size(); k++) {
+                    const Vec3d& p = r.pts[k];
+                    if (r.q[k] < thr) { havePrev = false; continue; }
+                    double lat = std::asin(clampd(p.y, -1, 1)) * 180 / kPi, lon = std::atan2(p.x, p.z) * 180 / kPi;
+                    Vector2 sp = toScreen(lat, lon);
+                    if (havePrev && std::fabs(sp.x - prev.x) < sw / 2 &&
+                        !((sp.x < 0 && prev.x < 0) || (sp.x > sw && prev.x > sw) || (sp.y < 0 && prev.y < 0) || (sp.y > sh && prev.y > sh))) {
+                        double widthKm = 0.008 * std::sqrt(r.q[k]);
+                        float wpx = (float)std::max(clampd(0.8 + std::log10(r.q[k] / thr + 1) * 2.0, 1.0, 4.5), widthKm / kmPerPxR);
+                        DrawLineEx(prev, sp, wpx, rc);
+                    }
+                    prev = sp; havePrev = true;
+                }
+            }
+        }
         if (showGrid) drawGrid(view, sw, sh, (int)(panel.x + panel.width), th.grid);
         Overlay ov = map.overlay();
 
@@ -344,6 +368,7 @@ int main() {
             L.y += 38;
             L.check("Latitude/longitude grid", &showGrid);
             L.check("Volcano markers", &showVolcanoes);
+            L.check("Rivers", &showRivers);
             L.heading("OVERLAY");
             GuiListView(Rectangle{L.x, L.y, L.w, 200}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab);Temperature;Rainfall;Biomes;Wind;Ocean currents", &overlayScroll, &overlayUi);
             L.y += 210;
@@ -462,7 +487,10 @@ int main() {
                 TextFormat("%s %.0f m", e > 0 ? "Elevation" : "Depth", std::fabs(e)),
                 TextFormat("Plate %d (%s), moving %.1f cm/yr", app.world.plateId[c] + 1, pl.continental ? "continental" : "oceanic", v.length() * 5),
                 TextFormat("Rock: %s, %.0f million yrs", World::rockName((Rock)app.world.rock[c]), app.world.rockAge[c]),
-                TextFormat("Nearest plate edge: %.0f km", app.world.distBoundaryKm[c]), clim};
+                TextFormat("Nearest plate edge: %.0f km%s", app.world.distBoundaryKm[c],
+                    app.world.discharge.empty() || app.world.elev[c] <= 0 ? "" :
+                    app.world.lakeType[c] == 1 ? "   Lake" : app.world.lakeType[c] == 2 ? "   Salt flat" :
+                    app.world.discharge[c] > 40 ? TextFormat("   River flow %.0f m3/s", app.world.discharge[c]) : ""), clim};
             int tw = 0;
             for (auto& s : lines) tw = std::max(tw, MeasureText(s.c_str(), fs));
             int bh = 6 * 22 + 14;

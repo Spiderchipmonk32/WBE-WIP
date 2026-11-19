@@ -104,6 +104,17 @@ public:
     std::vector<float> distOceanKm;            // land: distance to the sea
     double tiltDeg = 23.4;
 
+    // ---- rivers and lakes (rivers.cpp) ----
+    void generateRivers();
+    std::vector<int> flowTo;           // downstream cell, -1 at the sea
+    std::vector<float> discharge;      // m3/s flowing through each cell
+    std::vector<float> lakeSurface;    // lake water level (m); below the ground where there's no lake
+    std::vector<uint8_t> lakeType;     // 0 none, 1 lake, 2 salt flat
+    std::vector<float> saltMask;       // 1 on salt flats (for smooth drawing)
+    struct River { std::vector<Vec3d> pts; std::vector<float> q; int mouthCell; };
+    std::vector<River> rivers;
+    float maxDischarge = 0;
+
     double radiusKm = 6371;
     std::vector<Vec3d> cellDir;         // unit direction per cell
     void initGrid(double radius);

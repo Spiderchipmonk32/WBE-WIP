@@ -243,6 +243,13 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
             Vec3d dir = dirFromLatLon(lat, lon);
             bool land = h > 0;
             bool coast = land && (hl <= 0 || hr <= 0 || hu <= 0 || hd <= 0);
+            // lakes: fine terrain below the lake's water level
+            double lakeDepth = 0, salt = 0;
+            if (land && world_ && !world_->lakeSurface.empty()) {
+                double surf = World::sample(world_->lakeSurface, lat, lon);
+                if (surf > h) lakeDepth = surf - h;
+                if (lakeDepth <= 0) salt = World::sample(world_->saltMask, lat, lon);
+            }
             RGB col;
 
             if (j.style == MapStyle::Realistic) {
@@ -285,6 +292,13 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
                         col = mixc(col, RGB{112, 128, 124}, 0.6);
                 }
                 col = scale(col, 1 + grain * 0.06);
+            }
+            if (lakeDepth > 0) {
+                if (j.style == MapStyle::Fantasy) col = mixc(RGB{199, 210, 196}, RGB{62, 44, 28}, lakeDepth < 25 ? 0.5 : 0.0);
+                else if (j.style == MapStyle::Elevation) col = RGB{80, 140, 210};
+                else col = mixc(RGB{80, 150, 200}, RGB{30, 70, 140}, smoothstepd(0, 300, lakeDepth));
+            } else if (salt > 0.5 && j.style != MapStyle::Elevation) {
+                col = mixc(col, RGB{236, 232, 220}, smoothstepd(0.5, 0.8, salt) * 0.85);
             }
             if (j.overlay != Overlay::None) {
                 double oc[3], oa;

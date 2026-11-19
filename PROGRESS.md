@@ -5,6 +5,16 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Rivers and lakes
+- Water drains from every point to the sea: basins fill up into **lakes** until they spill over, and
+  in dry regions they evaporate into **salt flats** instead.
+- **River flow** builds up from rainfall minus evaporation, so rivers grow downstream and dry regions
+  have few. On an Earth-like planet the biggest rivers carry around 15,000 m3/s (Mississippi-sized).
+- Rivers are drawn as smooth, gently meandering lines whose width follows their flow; small rivers
+  appear as you zoom in. Toggle them in the Map tab. Lakes get natural shorelines from the detailed
+  terrain. Hover shows the river flow, lake or salt flat.
+- Rivers and lakes update when you press **Update climate for new terrain** after sculpting.
+
 ### Climate, wind, ocean currents and biomes
 - **Seasons** from the axial tilt (slider in the new **Climate** tab; try 0 for no seasons or 45+ for extreme ones).
   Land swings with the seasons more than sea, big continental interiors get cold winters, and air cools
