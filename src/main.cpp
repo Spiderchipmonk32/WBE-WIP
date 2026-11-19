@@ -97,7 +97,7 @@ void localAxes(double lat, double lon, Vec3d& east, Vec3d& north) {
 
 } // namespace
 
-enum Tab { TabWorld, TabMap, TabSculpt, TabResources, TabClimate, TabNations, TabCities, TabTrade, TabHistory, TabLore, TabFile };
+enum Tab { TabWorld, TabMap, TabSculpt, TabResources, TabClimate, TabNations, TabCities, TabTrade, TabHistory, TabLore, TabFile, TabPeoples };
 
 struct App {
     PlanetSettings ui;
@@ -267,6 +267,10 @@ int main() {
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
     char findBuf[64] = "";
     int measureTool = 0;
+    int cultureSel = -1, cultureScroll = 0, religionSel = -1, religionScroll = 0, rulerScroll = 0, rulerActive = -1, lastCultureSel = -2, lastReligionSel = -2;
+    char cultureNameBuf[64] = "", religionNameBuf[96] = "", religionNotesBuf[256] = "";
+    bool cultureNameEdit = false, religionNameEdit = false, religionNotesEdit = false;
+    float religionCountUi = 6;
     std::vector<std::pair<double, double>> measurePts;
     int eventSel = -1, eventScroll = 0, eventTool = 0, eventTypeUi = (int)EventType::Note, lastEventSel = -2;
     char evTitleBuf[128] = "", evTextBuf[256] = "";
@@ -707,7 +711,7 @@ int main() {
         // ---- Panel ----
         GuiPanel(panel, NULL);
         Layout L{panel.x + 14, panel.y + 12, panel.width - 28};
-        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 12) / 4, 28}, "World;Map;Sculpt;Resources\nClimate;Nations;Cities;Trade\nHistory;Lore;File", &tab);
+        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 12) / 4, 28}, "World;Map;Sculpt;Resources\nClimate;Nations;Cities;Trade\nHistory;Lore;File;Peoples", &tab);
         L.y += 104;
         const int month = (int)std::round(monthUi);
 
@@ -768,7 +772,7 @@ int main() {
             check2("Lore pins", &showPins, "Minimap", &showMini);
             check2("Compass", &showCompass, "Map title", &showTitle);
             L.heading("OVERLAY");
-            GuiListView(Rectangle{L.x, L.y, L.w, 170}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab);Temperature;Rainfall;Biomes;Wind;Ocean currents;Nations (political);Population density", &overlayScroll, &overlayUi);
+            GuiListView(Rectangle{L.x, L.y, L.w, 170}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab);Temperature;Rainfall;Biomes;Wind;Ocean currents;Nations (political);Population density;Religions;Cultures", &overlayScroll, &overlayUi);
             L.y += 176;
             if (overlayUi == 1) {
                 L.legend(Color{200, 30, 30, 255}, "Converging (mountains, trenches)");
@@ -873,6 +877,82 @@ int main() {
                 L.legend(Color{60, 140, 255, 255}, "Cold current");
                 L.note("Arrows show surface currents. Cold currents make coastal deserts; warm ones mild, wet coasts.");
             }
+        } else if (tab == TabPeoples) {
+            L.heading("CULTURES");
+            std::string items;
+            for (auto& c : app.doc.cultures) { if (!items.empty()) items += ";"; items += cleanList(c.name) + " (" + nameStyleName(c.style) + ")"; }
+            GuiListView(Rectangle{L.x, L.y, L.w, 100}, items.c_str(), &cultureScroll, &cultureSel);
+            L.y += 106;
+            if (cultureSel >= (int)app.doc.cultures.size()) cultureSel = -1;
+            if (cultureSel != lastCultureSel) { lastCultureSel = cultureSel; cultureNameEdit = false; if (cultureSel >= 0) std::strncpy(cultureNameBuf, app.doc.cultures[cultureSel].name.c_str(), 63); }
+            float bw2 = (L.w - 8) / 2;
+            if (cultureSel >= 0) {
+                Culture& c = app.doc.cultures[cultureSel];
+                if (GuiTextBox(Rectangle{L.x, L.y, L.w - 36, 28}, cultureNameBuf, 63, cultureNameEdit)) cultureNameEdit = !cultureNameEdit;
+                c.name = cultureNameBuf;
+                DrawRectangle((int)(L.x + L.w - 28), (int)L.y, 28, 28, Color{c.r, c.g, c.b, 255});
+                L.y += 34;
+                int st = (int)c.style;
+                GuiComboBox(Rectangle{L.x, L.y, bw2, 28}, "Nordic;Latin;Slavic;Eastern;Desert;Elvish;Celtic;Mesoamerican", &st);
+                c.style = (NameStyle)st;
+                if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, "Sample names")) {
+                    uint32_t ns = (uint32_t)GetRandomValue(1, 1 << 30);
+                    std::string t = "Places: " + makeName(c.style, ns) + ", " + makeName(c.style, ns) + ", " + makeName(c.style, ns) +
+                                    ".  People: " + makeName(c.style, ns, false) + ", " + makeName(c.style, ns, false);
+                    setStatus(t);
+                }
+                L.y += 36;
+            }
+            if (GuiButton(Rectangle{L.x, L.y, bw2, 28}, "New culture")) {
+                Culture c; c.style = (NameStyle)GetRandomValue(0, (int)NameStyle::Count - 1);
+                uint32_t ns = (uint32_t)GetRandomValue(1, 1 << 30); c.name = makeName(c.style, ns, false);
+                randomColor(c.r, c.g, c.b);
+                app.doc.cultures.push_back(c); cultureSel = (int)app.doc.cultures.size() - 1;
+            }
+            if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, "Show on map")) { overlayUi = 13; map.invalidateAll(); }
+            L.y += 36;
+            L.heading("RELIGIONS");
+            L.label(TextFormat("Religions to create: %d", (int)religionCountUi)); L.slider(&religionCountUi, 1, 20);
+            if (L.button("Generate religions") && !app.doc.cities.empty()) {
+                map.waitIdle();
+                generateReligions(app.doc, app.world, (int)religionCountUi, (uint32_t)GetRandomValue(1, 1 << 30));
+                overlayUi = 12; religionSel = -1; map.invalidateAll();
+            }
+            items.clear();
+            for (auto& r : app.doc.religions) { if (!items.empty()) items += ";"; items += cleanList(r.name); }
+            GuiListView(Rectangle{L.x, L.y, L.w, 100}, items.c_str(), &religionScroll, &religionSel);
+            L.y += 106;
+            if (religionSel >= (int)app.doc.religions.size()) religionSel = -1;
+            if (religionSel != lastReligionSel) {
+                lastReligionSel = religionSel; religionNameEdit = religionNotesEdit = false;
+                if (religionSel >= 0) {
+                    std::strncpy(religionNameBuf, app.doc.religions[religionSel].name.c_str(), 95);
+                    std::strncpy(religionNotesBuf, app.doc.religions[religionSel].notes.c_str(), 255);
+                }
+            }
+            if (religionSel >= 0) {
+                Religion& r = app.doc.religions[religionSel];
+                if (GuiTextBox(Rectangle{L.x, L.y, L.w - 36, 28}, religionNameBuf, 95, religionNameEdit)) religionNameEdit = !religionNameEdit;
+                r.name = religionNameBuf;
+                DrawRectangle((int)(L.x + L.w - 28), (int)L.y, 28, 28, Color{r.r, r.g, r.b, 255});
+                L.y += 34;
+                if (GuiTextBox(Rectangle{L.x, L.y, L.w, 28}, religionNotesBuf, 255, religionNotesEdit)) religionNotesEdit = !religionNotesEdit;
+                r.notes = religionNotesBuf;
+                L.y += 34;
+                int followers = 0;
+                for (auto f : app.doc.faith) if ((int)f - 1 == religionSel) followers++;
+                L.label(TextFormat("Founded %d, about %.1fM km2 of followers", r.founded, followers * app.world.cellKm() * app.world.cellKm() * 0.7 / 1e6));
+            }
+            L.heading("RULERS");
+            if (nationSel >= 0 && nationSel < (int)app.doc.nations.size()) {
+                const Nation& n = app.doc.nations[nationSel];
+                L.label(TextFormat("Rulers of %s (pick a nation in the Nations tab)", n.name.c_str()));
+                std::string rl;
+                for (auto& r : n.rulers) { if (!rl.empty()) rl += ";"; rl += TextFormat("%d to %d: ", r.start, r.end); rl += cleanList(r.name); }
+                GuiListView(Rectangle{L.x, L.y, L.w, 110}, rl.c_str(), &rulerScroll, &rulerActive);
+                L.y += 116;
+                if (L.button("Generate rulers for all nations")) generateRulers(app.doc, (uint32_t)GetRandomValue(1, 1 << 30));
+            } else L.note("Select a nation in the Nations tab to see its line of rulers.");
         } else if (tab == TabFile) {
             L.heading("SAVE");
             GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Name");
@@ -916,6 +996,8 @@ int main() {
                 generateCultures(app.doc, std::max(3, (int)nationCountUi / 6), (uint32_t)app.ui.seed + 5u);
                 generateNations(app.doc, app.world, (int)nationCountUi, (uint32_t)app.ui.seed + 17u);
                 generateCities(app.doc, app.world, cityDensityUi, (uint32_t)app.ui.seed + 29u);
+                generateReligions(app.doc, app.world, std::max(2, (int)nationCountUi / 7), (uint32_t)app.ui.seed + 41u);
+                generateRulers(app.doc, (uint32_t)app.ui.seed + 53u);
                 app.labelsDirty = true; nationSel = -1; citySel = -1;
                 overlayUi = 10;
                 map.invalidateAll();
@@ -983,6 +1065,8 @@ int main() {
                 for (auto& c : app.doc.cities) if (c.nation == nationSel) { ncity++; if (c.capital) cap = c.name; }
                 L.label(TextFormat("Area: %.0f km2   Cities: %d", area[nationSel], ncity));
                 L.label(TextFormat("Population: %lld   Capital: %s", pop[nationSel], cap.c_str()));
+                if (const Ruler* r = app.doc.rulerIn(nationSel, app.doc.currentYear))
+                    L.label(TextFormat("Ruler in %d: %s", app.doc.currentYear, r->name.c_str()));
                 L.heading("TERRITORY BRUSH");
                 GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Off;Paint;Erase", &polTool);
                 L.y += 36;
@@ -1129,6 +1213,7 @@ int main() {
             L.note("The map shows the world in this year: terrain events, cities founded and fallen.");
             if (L.button("Generate a history")) {
                 generateHistory(app.doc, app.world, (uint32_t)app.ui.seed + 99u);
+                generateRulers(app.doc, (uint32_t)app.ui.seed + 53u);
                 app.eventsDirty = true; eventSel = -1;
                 setStatus(TextFormat("Created %zu events", app.doc.events.size()));
             }
@@ -1268,7 +1353,7 @@ int main() {
         if ((MapStyle)styleUi != map.style()) map.setStyle((MapStyle)styleUi);
         static const Overlay overlayList[] = {Overlay::None, Overlay::Plates, Overlay::Rock, Overlay::Earthquakes, Overlay::Resource,
                                               Overlay::Temperature, Overlay::Rainfall, Overlay::Biomes, Overlay::Wind, Overlay::Currents,
-                                              Overlay::Political, Overlay::Population};
+                                              Overlay::Political, Overlay::Population, Overlay::Religion, Overlay::Culture};
         const int overlayCount = (int)(sizeof(overlayList) / sizeof(overlayList[0]));
         if (overlayUi < 0) overlayUi = 0;
         {
@@ -1346,6 +1431,8 @@ int main() {
             int nat = map.nationAt(mLat, mLon);
             if (nat >= 0 && nat < (int)app.doc.nations.size())
                 clim += std::string("   |   ") + app.doc.nations[nat].name + " (" + kGovernments[app.doc.nations[nat].government] + ")";
+            int rel = map.religionAt(mLat, mLon);
+            if (rel >= 0 && rel < (int)app.doc.religions.size()) clim += std::string(", ") + app.doc.religions[rel].name;
             std::string lines[6] = {
                 TextFormat("%.4f %c, %.4f %c", std::fabs(mLat), mLat >= 0 ? 'N' : 'S', std::fabs(mLon), mLon >= 0 ? 'E' : 'W'),
                 TextFormat("%s %.0f m", e > 0 ? "Elevation" : "Depth", std::fabs(e)),
@@ -1414,7 +1501,7 @@ int main() {
         DrawText("Scroll: zoom   Right/middle-drag or WASD: move", (int)(panel.x + panel.width) + 24, sh - 28, 16, Fade(th.text, 0.8f));
         EndDrawing();
         typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
-                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit;
+                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || cultureNameEdit || religionNameEdit || religionNotesEdit;
 
         // ---- Exports (after the frame, so the message above is visible while it works) ----
         static int exportFrames = 0;

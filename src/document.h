@@ -17,7 +17,18 @@ struct Culture {
     std::string notes;
 };
 
+struct Ruler { std::string name; int start = 0, end = 0; };
+
+struct Religion {
+    std::string name;
+    unsigned char r = 200, g = 200, b = 120;
+    int founded = 0;
+    double lat = 0, lon = 0;   // where it began
+    std::string notes;
+};
+
 struct Nation {
+    std::vector<Ruler> rulers;
     std::string name;
     unsigned char r = 200, g = 120, b = 120;
     int culture = 0;
@@ -72,9 +83,19 @@ struct Document {
     int currentYear = 0, yearMin = -3000, yearMax = 3000;
     std::vector<HistEvent> events;
     std::vector<Article> articles;
+    std::vector<Religion> religions;
+    std::vector<uint8_t> faith;    // per World cell: 0 = none, otherwise religion index + 1
     std::vector<std::pair<int, int>> customRoutes;   // city index pairs
 
-    void ensureOwner(int cells) { if ((int)owner.size() != cells) owner.assign(cells, 0); }
+    void ensureOwner(int cells) {
+        if ((int)owner.size() != cells) owner.assign(cells, 0);
+        if ((int)faith.size() != cells) faith.assign(cells, 0);
+    }
+    const Ruler* rulerIn(int nation, int year) const {
+        if (nation < 0 || nation >= (int)nations.size()) return nullptr;
+        for (const Ruler& r : nations[nation].rulers) if (r.start <= year && year < r.end) return &r;
+        return nullptr;
+    }
     void removeNation(int n);      // keeps indices in cities and territory consistent
     void removeCity(int c) {
         if (c < 0 || c >= (int)cities.size()) return;

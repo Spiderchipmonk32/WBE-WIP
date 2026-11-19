@@ -12,3 +12,8 @@ void generateCities(Document& doc, const World& w, double density, uint32_t seed
 std::vector<std::pair<double, double>> suggestSites(const Document& doc, const World& w, int count);
 // Area (km2) and city population of each nation
 void nationStats(const Document& doc, const World& w, std::vector<double>& areaKm2, std::vector<long long>& population);
+// Religions: founded in big cities and spread over land (and a little by sea)
+void generateReligions(Document& doc, const World& w, int count, uint32_t seed);
+// Rulers for each nation from its founding to the current year
+void generateRulers(Document& doc, uint32_t seed);
+const char* rulerTitle(int government, bool female);

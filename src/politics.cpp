@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <queue>
+#include <map>
 
 namespace {
 uint32_t rng(uint32_t& s) { s = s * 1664525u + 1013904223u; return s; }
@@ -187,4 +188,106 @@ void nationStats(const Document& doc, const World& w, std::vector<double>& areaK
         if (n >= 0 && n < (int)areaKm2.size()) areaKm2[n] += cellAreaKm2(w, i);
     }
     for (const City& c : doc.cities) if (c.nation >= 0 && c.nation < (int)population.size()) population[c.nation] += c.population;
+}
+
+void generateReligions(Document& doc, const World& w, int count, uint32_t seed) {
+    uint32_t s = seed * 747796405u + 31u;
+    const int N = World::W * World::H;
+    doc.religions.clear();
+    doc.faith.assign(N, 0);
+    if (doc.cities.empty()) return;
+    static const char* nouns[] = {"Sun", "Moon", "Flame", "Tide", "Stone", "Star", "Serpent", "Tree", "Storm", "Mountain", "River", "Raven", "Lion", "Mask", "Dawn", "Void"};
+    static const char* adjs[] = {"Eternal", "Silent", "Burning", "Hidden", "Twin", "Seventh", "Golden", "Pale", "Wandering", "First"};
+    // origins: big cities, far apart
+    std::vector<int> cand;
+    for (int i = 0; i < (int)doc.cities.size(); i++) cand.push_back(i);
+    std::sort(cand.begin(), cand.end(), [&](int a, int b) { return doc.cities[a].population > doc.cities[b].population; });
+    std::vector<int> origins;
+    for (int c : cand) {
+        if ((int)origins.size() >= count) break;
+        bool ok = true;
+        for (int o : origins)
+            if (std::hypot(doc.cities[c].lat - doc.cities[o].lat, (doc.cities[c].lon - doc.cities[o].lon) * std::cos(doc.cities[c].lat * kPi / 180)) < 22) ok = false;
+        if (ok) origins.push_back(c);
+    }
+    std::vector<float> cost(N, 1e30f);
+    std::vector<double> reach;
+    using QE = std::pair<float, int>;
+    std::priority_queue<QE, std::vector<QE>, std::greater<QE>> pq;
+    for (size_t k = 0; k < origins.size(); k++) {
+        const City& c = doc.cities[origins[k]];
+        Religion r;
+        uint32_t ns = seed + (uint32_t)k * 313u;
+        NameStyle st = c.culture >= 0 && c.culture < (int)doc.cultures.size() ? doc.cultures[c.culture].style : NameStyle::Latin;
+        std::string prophet = makeName(st, ns, false);
+        switch (rng(s) % 5) {
+            case 0: r.name = "Church of " + prophet; break;
+            case 1: r.name = prophet + "ism"; break;
+            case 2: r.name = std::string("Way of the ") + nouns[rng(s) % 16]; break;
+            case 3: r.name = std::string("Cult of the ") + adjs[rng(s) % 10] + " " + nouns[rng(s) % 16]; break;
+            default: r.name = std::string("Faith of the ") + adjs[rng(s) % 10] + " " + nouns[rng(s) % 16]; break;
+        }
+        r.r = (unsigned char)(60 + rnd01(s) * 190); r.g = (unsigned char)(60 + rnd01(s) * 190); r.b = (unsigned char)(60 + rnd01(s) * 190);
+        r.founded = c.founded + (int)(rnd01(s) * 300);
+        r.lat = c.lat; r.lon = c.lon;
+        r.notes = "First preached in " + c.name + ".";
+        doc.religions.push_back(r);
+        int cell = World::nearestCell(c.lat, c.lon);
+        cost[cell] = 0;
+        doc.faith[cell] = (uint8_t)(k + 1);
+        reach.push_back(0.6 + rnd01(s) * 1.0);   // some faiths spread further than others
+        pq.push({0.f, cell});
+    }
+    const double ck = w.cellKm();
+    while (!pq.empty()) {
+        auto [c, i] = pq.top(); pq.pop();
+        if (c > cost[i]) continue;
+        int rel = doc.faith[i] - 1;
+        int x = i % World::W, y = i / World::W;
+        const int nb[4] = {World::idx(x + 1, y), World::idx(x - 1, y), World::idx(x, y + 1), World::idx(x, y - 1)};
+        for (int n : nb) {
+            double step = ck * (n == nb[0] || n == nb[1] ? std::max(0.05, std::cos(World::cellLat(y) * kPi / 180)) : 1.0);
+            double pen = w.elev[n] <= 0 ? 2.5 : 1 + (1 - w.habitability[n]) * 1.5 + std::fabs(w.elev[n] - w.elev[i]) / 800.0;
+            float nc = (float)(c + step * pen / reach[rel]);
+            if (nc > 9000) continue;
+            if (nc < cost[n]) { cost[n] = nc; doc.faith[n] = (uint8_t)(rel + 1); pq.push({nc, n}); }
+        }
+    }
+    for (int i = 0; i < N; i++) if (w.elev[i] <= 0 || w.habitability[i] < 0.02) doc.faith[i] = 0;
+}
+
+const char* rulerTitle(int gov, bool f) {
+    static const char* m[] = {"King", "Emperor", "Consul", "High Priest", "Chief", "Doge", "Dictator", "President", "Prince", "Archmage"};
+    static const char* w[] = {"Queen", "Empress", "Consul", "High Priestess", "Chief", "Dogaressa", "Dictator", "President", "Princess", "Archmage"};
+    int i = gov < 0 || gov > 9 ? 0 : gov;
+    return f ? w[i] : m[i];
+}
+
+void generateRulers(Document& doc, uint32_t seed) {
+    uint32_t s = seed * 1103515245u + 12345u;
+    static const char* roman[] = {"", " II", " III", " IV", " V", " VI", " VII", " VIII", " IX", " X"};
+    for (size_t n = 0; n < doc.nations.size(); n++) {
+        Nation& nat = doc.nations[n];
+        nat.rulers.clear();
+        int start = doc.yearMin;
+        for (const City& c : doc.cities) if (c.nation == (int)n && c.capital) start = std::max(doc.yearMin, c.founded);
+        NameStyle st = nat.culture >= 0 && nat.culture < (int)doc.cultures.size() ? doc.cultures[nat.culture].style : NameStyle::Latin;
+        std::vector<std::string> pool;
+        uint32_t ns = seed + (uint32_t)n * 7777u;
+        for (int k = 0; k < 6; k++) pool.push_back(makeName(st, ns, false));   // dynasties reuse names
+        std::map<std::string, int> used;
+        int y = start;
+        bool elected = nat.government == 2 || nat.government == 7;   // republics and democracies
+        while (y < doc.currentYear && nat.rulers.size() < 400) {
+            int len = elected ? 4 + (int)(rnd01(s) * 6) : 3 + (int)(-std::log(std::max(1e-6, rnd01(s))) * 16);
+            bool female = rnd01(s) < 0.3;
+            std::string base = rnd01(s) < 0.7 ? pool[rng(s) % pool.size()] : makeName(st, ns, false);
+            int count = used[base]++;
+            Ruler r;
+            r.name = std::string(rulerTitle(nat.government, female)) + " " + base + (elected ? "" : roman[std::min(count, 9)]);
+            r.start = y; r.end = y + len;
+            nat.rulers.push_back(r);
+            y += len;
+        }
+    }
 }

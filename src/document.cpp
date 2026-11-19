@@ -42,6 +42,11 @@ void writeDocument(std::ostream& o, const Document& doc) {
     for (const Nation& n : doc.nations)
         o << "nation " << quote(n.name) << " " << (int)n.r << " " << (int)n.g << " " << (int)n.b << " " << n.culture << " " << n.government << " "
           << quote(n.notes) << "\n";
+    for (size_t n = 0; n < doc.nations.size(); n++)
+        for (const Ruler& r : doc.nations[n].rulers) o << "ruler " << n << " " << r.start << " " << r.end << " " << quote(r.name) << "\n";
+    for (const Religion& r : doc.religions)
+        o << "religion " << (int)r.r << " " << (int)r.g << " " << (int)r.b << " " << r.founded << " " << r.lat << " " << r.lon << " "
+          << quote(r.name) << " " << quote(r.notes) << "\n";
     for (const City& c : doc.cities)
         o << "city " << quote(c.name) << " " << c.lat << " " << c.lon << " " << c.population << " " << c.nation << " " << c.culture << " "
           << (c.capital ? 1 : 0) << " " << c.founded << " " << quote(c.notes) << " " << c.destroyed << "\n";
@@ -53,6 +58,25 @@ void writeDocument(std::ostream& o, const Document& doc) {
     for (const Article& a : doc.articles)
         o << "article " << (int)a.kind << " " << (a.pinned ? 1 : 0) << " " << a.lat << " " << a.lon << " " << quote(a.title) << " " << quote(a.body) << "\n";
     for (auto& r : doc.customRoutes) o << "route " << r.first << " " << r.second << "\n";
+    // faith, run-length encoded like territory
+    if (!doc.faith.empty() && !doc.religions.empty()) {
+        const int W = 720, H = (int)doc.faith.size() / W;
+        for (int y = 0; y < H; y++) {
+            bool any = false;
+            for (int x = 0; x < W; x++) if (doc.faith[y * W + x]) { any = true; break; }
+            if (!any) continue;
+            o << "faith " << y;
+            int x = 0;
+            while (x < W) {
+                uint8_t v = doc.faith[y * W + x];
+                int run = 1;
+                while (x + run < W && doc.faith[y * W + x + run] == v) run++;
+                o << " " << run << " " << (int)v;
+                x += run;
+            }
+            o << "\n";
+        }
+    }
     // territory, run-length encoded row by row
     if (!doc.owner.empty()) {
         const int W = 720, H = (int)doc.owner.size() / W;
@@ -111,6 +135,32 @@ bool readDocumentLine(const std::string& key, std::istringstream& in, const std:
         return true;
     }
     if (key == "era") { in >> doc.era; return true; }
+    if (key == "ruler") {
+        int n; Ruler r; in >> n >> r.start >> r.end;
+        size_t pos = (size_t)in.tellg(); if (pos == std::string::npos) return false;
+        if (!unquote(line, pos, r.name)) return false;
+        if (n >= 0 && n < (int)doc.nations.size()) doc.nations[n].rulers.push_back(r);
+        return true;
+    }
+    if (key == "religion") {
+        Religion r; int cr, cg, cb;
+        in >> cr >> cg >> cb >> r.founded >> r.lat >> r.lon;
+        r.r = (unsigned char)cr; r.g = (unsigned char)cg; r.b = (unsigned char)cb;
+        size_t pos = (size_t)in.tellg(); if (pos == std::string::npos) return false;
+        if (!unquote(line, pos, r.name)) return false;
+        unquote(line, pos, r.notes);
+        doc.religions.push_back(r);
+        return true;
+    }
+    if (key == "faith") {
+        const int W = 720, H = 360;
+        doc.ensureOwner(W * H);
+        int y; in >> y;
+        if (y < 0 || y >= H) return false;
+        int x = 0, run, v;
+        while (x < W && (in >> run >> v)) for (int k = 0; k < run && x < W; k++, x++) doc.faith[y * W + x] = (uint8_t)v;
+        return true;
+    }
     if (key == "years") { in >> doc.currentYear >> doc.yearMin >> doc.yearMax; return true; }
     if (key == "event") {
         HistEvent e; int t;

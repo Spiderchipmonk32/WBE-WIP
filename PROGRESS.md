@@ -5,6 +5,18 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Religions, rulers and the Peoples tab
+- **Religions** are founded in great cities and spread outwards over land (and slowly by sea), some
+  further than others. Names like "Way of the River", "Church of Letruddith" or "Cult of the Silent Star".
+  Rename them, add notes, see how far they've spread. **Religions** map overlay with wavy borders.
+- **Cultures** can now be renamed, recoloured, given a different naming language, and previewed with
+  sample names. **Cultures** map overlay.
+- **Rulers**: every nation gets a line of rulers from its founding to the present, with titles that fit
+  its government (King/Queen, Emperor/Empress, Consul, High Priest/Priestess, Doge, Archmage...),
+  recurring dynastic names with regnal numbers, and elected terms for republics. The nation card shows
+  who rules in the year set on the timeline; the Peoples tab lists them all.
+- Generating nations now also creates religions and rulers. All saved in the world file.
+
 ### Hand-drawn symbols on the fantasy map
 - The Fantasy style now draws **inked mountains** (lit and shaded sides, hatching, snow caps on the
   highest), **hills**, **leafy forests** and **conifer forests** (taiga), placed by the actual terrain and

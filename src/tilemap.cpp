@@ -67,12 +67,22 @@ void TileMap::setStyle(MapStyle s) {
     invalidateAll();   // old tiles stay on screen until the new ones arrive
 }
 
-int TileMap::nationAt(double lat, double lon) const {
-    if (!doc_ || doc_->owner.empty()) return -1;
+int TileMap::jitteredCell(double lat, double lon) const {
     // jitter the lookup so borders wiggle naturally instead of following the 55 km grid
     double jl = paper_(lon * 1.7, lat * 1.7, 7.5) * 0.30 + paper_(lon * 6.0, lat * 6.0, 9.5) * 0.10;
     double jo = paper_(lon * 1.7 + 40, lat * 1.7, 3.5) * 0.30 + paper_(lon * 6.0 + 40, lat * 6.0, 1.5) * 0.10;
-    return doc_->nationAt(World::nearestCell(clampd(lat + jl, -89.99, 89.99), lon + jo / std::max(0.2, std::cos(lat * kPi / 180))));
+    return World::nearestCell(clampd(lat + jl, -89.99, 89.99), lon + jo / std::max(0.2, std::cos(lat * kPi / 180)));
+}
+
+int TileMap::nationAt(double lat, double lon) const {
+    if (!doc_ || doc_->owner.empty()) return -1;
+    return doc_->nationAt(jitteredCell(lat, lon));
+}
+
+int TileMap::religionAt(double lat, double lon) const {
+    if (!doc_ || doc_->faith.empty()) return -1;
+    int c = jitteredCell(lat, lon);
+    return (int)doc_->faith[c] - 1;
 }
 
 void TileMap::setOverlay(Overlay o, int param) {
@@ -242,7 +252,7 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
 
     // Nations: owner per pixel (with a border ring) so borders can be outlined
     std::vector<int> own;
-    const bool political = j.overlay == Overlay::Political && doc_ && !doc_->owner.empty();
+    const bool political = (j.overlay == Overlay::Political || j.overlay == Overlay::Religion || j.overlay == Overlay::Culture) && doc_ && !doc_->owner.empty();
     if (political) {
         own.assign(B * B, -1);
         for (int by = 0; by < B; by++) {
@@ -250,7 +260,12 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
             for (int bx = 0; bx < B; bx++) {
                 if (H[by * B + bx] <= 0) continue;
                 double lon = -180 + (j.tx + (bx - 1 + 0.5) / N) * T;
-                own[by * B + bx] = nationAt(lat, lon);
+                if (j.overlay == Overlay::Religion) own[by * B + bx] = religionAt(lat, lon);
+                else {
+                    int n = nationAt(lat, lon);
+                    if (j.overlay == Overlay::Culture) own[by * B + bx] = n >= 0 && n < (int)doc_->nations.size() ? doc_->nations[n].culture : -1;
+                    else own[by * B + bx] = n;
+                }
             }
         }
     }
@@ -337,10 +352,13 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
             }
             if (political) {
                 int o = own[c];
-                if (o >= 0 && o < (int)doc_->nations.size()) {
-                    const Nation& nt = doc_->nations[o];
+                bool valid = j.overlay == Overlay::Religion ? (o >= 0 && o < (int)doc_->religions.size())
+                           : j.overlay == Overlay::Culture ? (o >= 0 && o < (int)doc_->cultures.size()) : (o >= 0 && o < (int)doc_->nations.size());
+                if (valid) {
+                    RGB nc = j.overlay == Overlay::Religion ? RGB{(double)doc_->religions[o].r, (double)doc_->religions[o].g, (double)doc_->religions[o].b}
+                           : j.overlay == Overlay::Culture ? RGB{(double)doc_->cultures[o].r, (double)doc_->cultures[o].g, (double)doc_->cultures[o].b}
+                           : RGB{(double)doc_->nations[o].r, (double)doc_->nations[o].g, (double)doc_->nations[o].b};
                     bool border = own[c - 1] != o || own[c + 1] != o || own[c - B] != o || own[c + B] != o;
-                    RGB nc{(double)nt.r, (double)nt.g, (double)nt.b};
                     if (border && !coast) col = mixc(col, scale(nc, 0.45), 0.85);
                     else col = mixc(col, nc, j.style == MapStyle::Fantasy ? 0.32 : 0.42);
                 }

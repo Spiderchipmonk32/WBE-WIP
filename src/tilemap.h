@@ -19,7 +19,7 @@
 enum class MapStyle { Realistic = 0, Fantasy = 1, Elevation = 2 };
 
 // Data drawn on top of the map style
-enum class Overlay { None = 0, Plates, Rock, Earthquakes, Temperature, Rainfall, Biomes, Resource, Political, Population, Wind, Currents, Count };
+enum class Overlay { None = 0, Plates, Rock, Earthquakes, Temperature, Rainfall, Biomes, Resource, Political, Population, Wind, Currents, Religion, Culture, Count };
 
 struct MapView {
     double centerLon = 0, centerLat = 15;
@@ -43,6 +43,8 @@ public:
     void setDocument(const Document* d) { doc_ = d; }
     // Nation at a point, with the same wavy borders the map draws (-1 = none)
     int nationAt(double lat, double lon) const;
+    int religionAt(double lat, double lon) const;
+    int jitteredCell(double lat, double lon) const;
     void setOverlay(Overlay o, int param);   // param: month for climate, resource id for resources
     Overlay overlay() const { return overlay_; }
     void invalidate(const Vec3d& dir, double radiusKm);   // redraw the area a brush touched
