@@ -131,14 +131,14 @@ double Planet::elevation(const Vec3d& d, int detailOctaves, const std::vector<in
     if (filt) { for (int i : *filt) h = applyStroke(strokes_[i], d, h); }
     else      { for (const Stroke& s : strokes_) h = applyStroke(s, d, h); }
     for (const Stroke& s : eventStrokes_) h = applyStroke(s, d, h);
-    return h;
+    return h - settings_.seaLevel;
 }
 
 double Planet::elevationWith(const Vec3d& d, int detailOctaves, const std::vector<Stroke>& strokes) const {
     double h = baseElevation(d);
     h += detail(d, h, detailOctaves);
     for (const Stroke& s : strokes) h = applyStroke(s, d, h);
-    return h;
+    return h - settings_.seaLevel;
 }
 
 void Planet::beginStrokeGroup(BrushType type, const Vec3d& dir, double radiusKm) {

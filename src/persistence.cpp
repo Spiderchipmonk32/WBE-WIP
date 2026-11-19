@@ -58,7 +58,8 @@ bool saveWorld(const std::string& path, const SaveData& d, std::string& err) {
         o << "WORLDBUILDER 1\n";
         o << "seed " << s.seed << "\n" << "radius " << s.radiusKm << "\n" << "ocean " << s.oceanPercent << "\n"
           << "mountains " << s.mountains << "\n" << "continents " << s.continentSize << "\n" << "plates " << s.plateCount << "\n"
-          << "activity " << s.tectonicActivity << "\n" << "tilt " << s.axialTilt << "\n";
+          << "activity " << s.tectonicActivity << "\n" << "tilt " << s.axialTilt << "\n"
+          << "climate " << s.tempOffset << " " << s.rainMultiplier << " " << s.seaLevel << "\n";
         o << "view " << d.viewLon << " " << d.viewLat << " " << d.viewZoom << " " << d.style << "\n";
         for (const Stroke& st : d.strokes)
             o << "stroke " << (int)st.type << " " << st.dir.x << " " << st.dir.y << " " << st.dir.z << " " << st.radiusKm << " "
@@ -93,6 +94,7 @@ bool loadWorld(const std::string& path, SaveData& d, std::string& err) {
         else if (key == "plates") ls >> s.plateCount;
         else if (key == "activity") ls >> s.tectonicActivity;
         else if (key == "tilt") ls >> s.axialTilt;
+        else if (key == "climate") ls >> s.tempOffset >> s.rainMultiplier >> s.seaLevel;
         else if (key == "view") ls >> d.viewLon >> d.viewLat >> d.viewZoom >> d.style;
         else if (key == "stroke") {
             Stroke st{}; int t;

@@ -93,7 +93,7 @@ public:
     double totalTonnes(int res) const;
 
     // ---- climate (climate.cpp); empty until generated ----
-    void generateClimate(double axialTiltDeg);
+    void generateClimate(double axialTiltDeg, double tempOffset = 0, double rainMultiplier = 1);
     std::vector<float> rainfallYear;   // mm per year
     std::vector<float> tempYear;       // mean degC
     std::vector<float> tempSeaLevel;   // annual mean reduced to sea level (for fine-detail colouring)

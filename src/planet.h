@@ -17,6 +17,9 @@ struct PlanetSettings {
     int   plateCount = 14;
     float tectonicActivity = 1.f;
     float axialTilt = 23.4f;
+    float tempOffset = 0.f;       // degC added everywhere (ice ages, hothouse worlds)
+    float rainMultiplier = 1.f;
+    float seaLevel = 0.f;         // metres: positive floods coasts, negative exposes shelves
 };
 
 enum class BrushType { Raise = 1, Lower = 2, Smooth = 3, Flatten = 4 };

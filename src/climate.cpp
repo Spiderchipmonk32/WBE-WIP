@@ -61,7 +61,7 @@ double insolation(double latDeg, double declDeg) {
 double annualBaseTemp(double absLat) { return 27.0 - 52.0 * std::pow(absLat / 90.0, 1.5); }
 }
 
-void World::generateClimate(double axialTiltDeg) {
+void World::generateClimate(double axialTiltDeg, double tempOffset, double rainMultiplier) {
     tiltDeg = axialTiltDeg;
     const int N = W * H;
     const double ck = cellKm();
@@ -172,7 +172,7 @@ void World::generateClimate(double axialTiltDeg) {
                 t = base + 7 * smoothstepd(35, 80, a) + 9 * (qRow[mSea * H + y] - qMean[y]) + seaTempAnomaly[i];
                 t = std::max(t, -2.0);
             }
-            tempMonth[m][i] = (float)t;
+            tempMonth[m][i] = (float)(land[i] ? t + tempOffset : std::max(-2.0, t + tempOffset));
         }
     }
     for (int m = 0; m < 12; m++) {
@@ -234,7 +234,7 @@ void World::generateClimate(double axialTiltDeg) {
                 int i = y * W + x;
                 double coldFactor = clampd((T[i] + 12) / 30.0, 0.12, 1.25);   // cold air holds less water
                 if (!land[i]) {
-                    rainMonth[m][i] = (float)(zonal * clampd(0.45 + T[i] / 30.0, 0.25, 1.4));
+                    rainMonth[m][i] = (float)(zonal * clampd(0.45 + T[i] / 30.0, 0.25, 1.4) * rainMultiplier);
                     continue;
                 }
                 // trace upwind until reaching the sea (max ~2,500 km)
@@ -260,7 +260,7 @@ void World::generateClimate(double axialTiltDeg) {
                 if (!reached) overLand += 1500;
                 double supply = std::exp(-overLand / 2800.0) * std::exp(-barrier / 2600.0) * clampd(0.5 + srcT / 30.0, 0.3, 1.4);
                 double r = zonal * 1.65 * (0.18 + 0.82 * supply) + lift / 1000.0 * 320 * supply;
-                rainMonth[m][i] = (float)(r * coldFactor + 6);
+                rainMonth[m][i] = (float)((r * coldFactor + 6) * rainMultiplier);
             }
         }
     });

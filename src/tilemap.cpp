@@ -496,3 +496,11 @@ void TileMap::draw(const MapView& v, int sw, int sh) {
         }
     }
 }
+
+void TileMap::drawMini(Rectangle r) {
+    for (int ty = 0; ty < 2; ty++)
+        for (int tx = 0; tx < 4; tx++) {
+            Rectangle dst{r.x + tx * r.width / 4, r.y + ty * r.height / 2, r.width / 4 + 1, r.height / 2 + 1};
+            drawTile(0, tx, ty, dst);
+        }
+}

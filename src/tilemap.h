@@ -50,6 +50,7 @@ public:
 
     void update(const MapView& v, int sw, int sh);        // collect finished tiles, request new ones
     void draw(const MapView& v, int sw, int sh);
+    void drawMini(Rectangle r);   // whole world, small (uses the coarsest tiles)
 
     // Render the whole world at a zoom level into one RGBA image (for exporting). Blocks.
     void renderWorld(int level, std::vector<unsigned char>& rgba, int& w, int& h) const;

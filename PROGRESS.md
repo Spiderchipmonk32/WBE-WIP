@@ -5,6 +5,18 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Templates, global climate, map tools and flags
+- **World templates** (World tab): Earth-like, archipelago, Pangaea, desert world, ice world, water
+  world, hothouse. Picking one sets the sliders; press Generate planet.
+- **Sea level** slider (World tab): raise it to drown coasts, lower it to expose continental shelves.
+- **Global temperature** and **rainfall** controls (Climate tab) for ice ages, hothouse worlds and
+  deserts; Recalculate climate applies them.
+- **Minimap** (top right) showing where you are; click or drag on it to jump.
+- **Find** (Map tab): type part of a name to jump to any nation, city, pinned article or event.
+- **Measure distance** (Map tab): click points for distance plus travel time on foot, by horse and by ship.
+- **Procedural flags** for every nation (Nations tab).
+- **Compass rose** and a **map title** cartouche (Map tab checkboxes), styled for the fantasy map too.
+
 ### Timeline that changes the map (History tab)
 - A **year slider** (with -100/-10/+10/+100 buttons) shows the world in any year.
 - **Events** placed on the map: notes, meteor impacts, volcanic eruptions, upheavals (land rises),

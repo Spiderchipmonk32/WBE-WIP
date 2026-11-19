@@ -9,6 +9,7 @@
 #include "politics.h"
 #include "trade.h"
 #include "history.h"
+#include "extras.h"
 #include <climits>
 #include <vector>
 #include <thread>
@@ -164,7 +165,7 @@ struct App {
         world.generateTectonics(planet, ui.seed, ui.plateCount, ui.tectonicActivity);
         planet.setUplift(&world.uplift);
         world.sampleElevation(planet);
-        world.generateClimate(ui.axialTilt);
+        world.generateClimate(ui.axialTilt, ui.tempOffset, ui.rainMultiplier);
         planet.setClimate(&world.tempSeaLevel, &world.rainfallYear);
         world.generateRivers();
         world.generateHabitability();
@@ -202,7 +203,7 @@ struct App {
     void recalcClimate() {
         map->waitIdle();
         world.sampleElevation(planet);
-        world.generateClimate(ui.axialTilt);
+        world.generateClimate(ui.axialTilt, ui.tempOffset, ui.rainMultiplier);
         world.generateRivers();
         world.generateHabitability();
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
@@ -238,6 +239,8 @@ int main() {
     float radiusUi = app.ui.radiusKm, oceanUi = app.ui.oceanPercent, mountUi = app.ui.mountains, contUi = app.ui.continentSize;
     float platesUi = (float)app.ui.plateCount, activityUi = app.ui.tectonicActivity;
     float monthUi = 12, tiltUi = app.ui.axialTilt;
+    float tempOffUi = app.ui.tempOffset, rainMulUi = app.ui.rainMultiplier, seaUi = app.ui.seaLevel;
+    int templateUi = 0;
     char nameBuf[64] = "my world";
     bool nameEdit = false, autosave = true;
     int savedScroll = 0, savedActive = -1;
@@ -248,6 +251,7 @@ int main() {
     auto syncSliders = [&]() {
         radiusUi = app.ui.radiusKm; oceanUi = app.ui.oceanPercent; mountUi = app.ui.mountains; contUi = app.ui.continentSize;
         platesUi = (float)app.ui.plateCount; activityUi = app.ui.tectonicActivity; tiltUi = app.ui.axialTilt;
+        tempOffUi = app.ui.tempOffset; rainMulUi = app.ui.rainMultiplier; seaUi = app.ui.seaLevel;
     };
     auto setStatus = [&](const std::string& t) { status = t; statusTime = GetTime(); };
     int nationSel = -1, nationScroll = 0, polTool = 0;
@@ -260,6 +264,10 @@ int main() {
     std::vector<std::pair<double, double>> sites;
     int lastNationSel = -2, lastCitySel = -2;
     bool showRoutes = true, showEvents = true, showPins = true, typing = false;
+    bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
+    char findBuf[64] = "";
+    int measureTool = 0;
+    std::vector<std::pair<double, double>> measurePts;
     int eventSel = -1, eventScroll = 0, eventTool = 0, eventTypeUi = (int)EventType::Note, lastEventSel = -2;
     char evTitleBuf[128] = "", evTextBuf[256] = "";
     bool evTitleEdit = false, evTextEdit = false;
@@ -292,7 +300,10 @@ int main() {
         const bool placingCity = tab == TabCities && cityTool == 1;
         const bool placingEvent = tab == TabHistory && eventTool == 1;
         const bool pinningLore = tab == TabLore && loreTool == 1 && loreSel >= 0;
-        const bool anyTool = activeTool > 0 || paintingTerritory || placingCity || placingEvent || pinningLore;
+        const bool measuring = tab == TabMap && measureTool == 1;
+        const bool anyTool = activeTool > 0 || paintingTerritory || placingCity || placingEvent || pinningLore || measuring;
+        const Rectangle miniRect{(float)sw - 270, 50, 256, 128};
+        const bool overMini = showMini && CheckCollisionPointRec(mouse, miniRect);
         app.applyYear();
         const int year = app.doc.currentYear;
         // events and lore pins under the mouse
@@ -395,7 +406,7 @@ int main() {
 
         double mLon = wrapLon(view.centerLon + (mouse.x - sw / 2.0) / view.pxPerDeg);
         double mLat = view.centerLat - (mouse.y - sh / 2.0) / view.pxPerDeg;
-        bool hit = !overPanel && std::fabs(mLat) <= 90;
+        bool hit = !overPanel && std::fabs(mLat) <= 90 && !(showMini && CheckCollisionPointRec(mouse, Rectangle{(float)sw - 270, 50, 256, 128}));
         Vec3d hitDir = TileMap::dirFromLatLon(clampd(mLat, -90, 90), mLon);
         auto toScreen = [&](double lat, double lon) {
             double dl = std::remainder(lon - view.centerLon, 360.0);
@@ -458,6 +469,14 @@ int main() {
             a.lat = mLat; a.lon = mLon; a.pinned = true;
             loreTool = 0;
         }
+        if (overMini && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !painting) {
+            view.centerLon = -180 + (mouse.x - miniRect.x) / miniRect.width * 360;
+            view.centerLat = 90 - (mouse.y - miniRect.y) / miniRect.height * 180;
+            panning = false;
+        } else if (measuring && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            measurePts.push_back({mLat, mLon});
+        }
+        if (measuring && IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)) measurePts.clear();
         auto doUndo = [&]() {
             for (auto& a : app.planet.undo()) map.invalidate(a.first, a.second * 1.1);
             app.stats = app.planet.computeStats();
@@ -702,6 +721,22 @@ int main() {
             L.label(TextFormat("Ocean cover: %.0f%%", oceanUi)); L.slider(&oceanUi, 0, 95);
             L.label(TextFormat("Mountains: %.1f", mountUi)); L.slider(&mountUi, 0, 2.5f);
             L.label(TextFormat("Continent size: %.1f", contUi)); L.slider(&contUi, 0.4f, 2.5f);
+            L.label(TextFormat("Sea level: %+.0f m", seaUi)); L.slider(&seaUi, -1000, 1000);
+            {
+                int prevT = templateUi;
+                GuiComboBox(Rectangle{L.x, L.y, L.w, 28}, "Template: custom;Template: Earth-like;Template: archipelago;Template: Pangaea;Template: desert world;Template: ice world;Template: water world;Template: hothouse", &templateUi);
+                L.y += 34;
+                if (templateUi != prevT && templateUi > 0) {
+                    struct T { float ocean, mount, cont, plates, act, tilt, temp, rain, sea; };
+                    static const T tp[] = {{70, 1, 1, 14, 1, 23.4f, 0, 1, 0}, {70, 1, 1, 14, 1, 23.4f, 0, 1, 0}, {86, 1.2f, 0.5f, 22, 1.3f, 23.4f, 2, 1.2f, 0},
+                                           {62, 1, 2.5f, 9, 1, 23.4f, 1, 0.85f, 0}, {28, 1.2f, 1.2f, 14, 1, 20, 9, 0.25f, 0}, {62, 1, 1, 14, 1, 15, -22, 0.6f, 0},
+                                           {95, 0.8f, 0.6f, 18, 1.2f, 23.4f, 3, 1.3f, 0}, {75, 1, 1, 14, 1, 23.4f, 13, 1.5f, 0}};
+                    const T& t = tp[templateUi];
+                    oceanUi = t.ocean; mountUi = t.mount; contUi = t.cont; platesUi = t.plates; activityUi = t.act; tiltUi = t.tilt;
+                    tempOffUi = t.temp; rainMulUi = t.rain; seaUi = t.sea;
+                    setStatus("Template set: press Generate planet");
+                }
+            }
             L.heading("TECTONICS");
             L.label(TextFormat("Plates: %d", (int)platesUi)); L.slider(&platesUi, 4, 30);
             L.label(TextFormat("Tectonic activity: %.1f", activityUi)); L.slider(&activityUi, 0, 2);
@@ -715,28 +750,30 @@ int main() {
             if (genClicked) {
                 app.ui.radiusKm = std::round(radiusUi); app.ui.oceanPercent = oceanUi; app.ui.mountains = mountUi;
                 app.ui.continentSize = contUi; app.ui.plateCount = (int)platesUi; app.ui.tectonicActivity = activityUi;
+                app.ui.axialTilt = tiltUi; app.ui.tempOffset = tempOffUi; app.ui.rainMultiplier = rainMulUi; app.ui.seaLevel = seaUi;
                 app.regenerate();
             }
         } else if (tab == 1) {
             L.heading("MAP STYLE");
             GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Realistic;Fantasy;Elevation", &styleUi);
-            L.y += 38;
-            L.check("Latitude/longitude grid", &showGrid);
-            L.check("Volcano markers", &showVolcanoes);
-            L.check("Rivers", &showRivers);
+            L.y += 36;
+            auto check2 = [&](const char* a, bool* va, const char* b, bool* vb) {
+                GuiCheckBox(Rectangle{L.x, L.y, 20, 20}, a, va);
+                GuiCheckBox(Rectangle{L.x + L.w / 2, L.y, 20, 20}, b, vb);
+                L.y += 26;
+            };
+            check2("Grid", &showGrid, "Rivers", &showRivers);
+            check2("Cities", &showCities, "Labels", &showLabels);
+            check2("Volcanoes", &showVolcanoes, "Events", &showEvents);
+            check2("Lore pins", &showPins, "Minimap", &showMini);
+            check2("Compass", &showCompass, "Map title", &showTitle);
             L.heading("OVERLAY");
-            GuiListView(Rectangle{L.x, L.y, L.w, 200}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab);Temperature;Rainfall;Biomes;Wind;Ocean currents;Nations (political);Population density", &overlayScroll, &overlayUi);
-            L.y += 210;
-            L.check("City markers", &showCities);
-            L.check("Names and labels", &showLabels);
-            L.check("History events", &showEvents);
-            L.check("Lore pins", &showPins);
-            // legend
+            GuiListView(Rectangle{L.x, L.y, L.w, 170}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab);Temperature;Rainfall;Biomes;Wind;Ocean currents;Nations (political);Population density", &overlayScroll, &overlayUi);
+            L.y += 176;
             if (overlayUi == 1) {
                 L.legend(Color{200, 30, 30, 255}, "Converging (mountains, trenches)");
                 L.legend(Color{30, 90, 210, 255}, "Spreading (rifts, ridges)");
                 L.legend(Color{230, 190, 30, 255}, "Sliding (transform faults)");
-                L.note("Arrows show which way each plate moves.");
             } else if (overlayUi == 2) {
                 const Color pal[6] = {{70, 82, 100, 255}, {214, 188, 132, 255}, {178, 58, 48, 255}, {232, 150, 168, 255}, {132, 104, 176, 255}, {96, 140, 84, 255}};
                 for (int r = 0; r < 6; r++) L.legend(pal[r], World::rockName((Rock)r));
@@ -744,6 +781,34 @@ int main() {
                 L.legend(Color{255, 210, 40, 255}, "Some earthquake risk");
                 L.legend(Color{255, 30, 40, 255}, "High earthquake risk");
             }
+            L.heading("FIND");
+            if (GuiTextBox(Rectangle{L.x, L.y, L.w, 28}, findBuf, 63, findEdit)) findEdit = !findEdit;
+            L.y += 32;
+            {
+                std::string q = findBuf;
+                for (char& ch : q) ch = (char)std::tolower((unsigned char)ch);
+                struct Hit { std::string label; double lat, lon; };
+                std::vector<Hit> hits;
+                auto match = [&](const std::string& n) { std::string t = n; for (char& ch : t) ch = (char)std::tolower((unsigned char)ch); return t.find(q) != std::string::npos; };
+                if (q.size() >= 2) {
+                    for (size_t i = 0; i < app.doc.nations.size() && hits.size() < 6; i++)
+                        if (match(app.doc.nations[i].name) && i < app.nationLabels.size()) hits.push_back({"Nation: " + app.doc.nations[i].name, app.nationLabels[i].lat, app.nationLabels[i].lon});
+                    for (auto& c : app.doc.cities) if (hits.size() < 6 && match(c.name)) hits.push_back({"City: " + c.name, c.lat, c.lon});
+                    for (auto& a : app.doc.articles) if (hits.size() < 6 && a.pinned && match(a.title)) hits.push_back({"Lore: " + a.title, a.lat, a.lon});
+                    for (auto& e : app.doc.events) if (hits.size() < 6 && match(e.title)) hits.push_back({TextFormat("Event %d: ", e.year) + e.title, e.lat, e.lon});
+                }
+                for (auto& h : hits) {
+                    if (GuiButton(Rectangle{L.x, L.y, L.w, 24}, h.label.c_str())) {
+                        view.centerLat = h.lat; view.centerLon = h.lon; view.pxPerDeg = std::max(view.pxPerDeg, 25.0);
+                    }
+                    L.y += 27;
+                }
+                if (q.size() >= 2 && hits.empty()) L.note("Nothing found.");
+            }
+            L.heading("MEASURE");
+            GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 4) / 2, 26}, "Off;Measure distance", &measureTool);
+            L.y += 32;
+            if (measureTool == 1) L.note(measurePts.empty() ? "Click points on the map. Right-click to clear." : "Keep clicking to add points; right-click to clear.");
         } else if (tab == 3) {
             L.heading("RESOURCES");
             GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 26}, "Metals;Gems;Fuels\nIndustrial;Building", &resGroupUi);
@@ -779,7 +844,12 @@ int main() {
         } else if (tab == 4) {
             L.heading("CLIMATE");
             L.label(TextFormat("Axial tilt: %.1f degrees", tiltUi)); L.slider(&tiltUi, 0, 60);
-            if (L.button("Recalculate climate", 30)) { app.ui.axialTilt = tiltUi; app.recalcClimate(); }
+            L.label(TextFormat("Global temperature: %+.0f C", tempOffUi)); L.slider(&tempOffUi, -30, 30);
+            L.label(TextFormat("Rainfall: x%.2f", rainMulUi)); L.slider(&rainMulUi, 0.1f, 3);
+            if (L.button("Recalculate climate", 30)) {
+                app.ui.axialTilt = tiltUi; app.ui.tempOffset = tempOffUi; app.ui.rainMultiplier = rainMulUi;
+                app.recalcClimate();
+            }
             L.label(TextFormat("Month: %s", kMonths[month])); L.slider(&monthUi, 0, 12);
             L.heading("SHOW");
             int prevView = climateViewUi;
@@ -888,6 +958,9 @@ int main() {
                 if (nationNameEdit || n.name != nationNameBuf) { n.name = nationNameBuf; app.labelsDirty = true; }
                 DrawRectangle((int)(L.x + L.w - 28), (int)L.y, 28, 28, Color{n.r, n.g, n.b, 255});
                 L.y += 34;
+                drawFlag(Rectangle{L.x, L.y, 66, 42}, n);
+                GuiLabel(Rectangle{L.x + 76, L.y + 10, L.w - 76, 22}, TextFormat("Flag of %s", n.name.c_str()));
+                L.y += 50;
                 if (GuiButton(Rectangle{L.x, L.y, bw, 26}, "New colour")) { map.waitIdle(); randomColor(n.r, n.g, n.b); map.invalidateAll(); }
                 int gov = n.government;
                 GuiComboBox(Rectangle{L.x + bw + 8, L.y, bw, 26}, "Kingdom;Empire;Republic;Theocracy;Tribal conf.;Merchant league;Dictatorship;Democracy;City-state;Magocracy", &gov);
@@ -1204,6 +1277,55 @@ int main() {
             map.setOverlay(o, monthly ? month : app.world.selectedRes);
         }
 
+        // ---- Measuring ----
+        if (!measurePts.empty() && (measureTool == 1 || tab == TabMap)) {
+            double totalKm = 0;
+            for (size_t k = 0; k < measurePts.size(); k++) {
+                Vector2 p = toScreen(measurePts[k].first, measurePts[k].second);
+                DrawCircleV(p, 4, YELLOW);
+                if (k > 0) {
+                    Vector2 q = toScreen(measurePts[k - 1].first, measurePts[k - 1].second);
+                    if (std::fabs(p.x - q.x) < sw / 2) DrawLineEx(q, p, 2.5f, YELLOW);
+                    totalKm += angleBetween(TileMap::dirFromLatLon(measurePts[k - 1].first, measurePts[k - 1].second),
+                                            TileMap::dirFromLatLon(measurePts[k].first, measurePts[k].second)) * R;
+                }
+            }
+            if (measurePts.size() >= 2) {
+                Vector2 p = toScreen(measurePts.back().first, measurePts.back().second);
+                std::string t1 = std::string("Distance: ") + formatKm(totalKm);
+                std::string t2 = TextFormat("On foot %.1f days, horse %.1f days, ship %.1f days", totalKm / 30, totalKm / 60, totalKm / 150);
+                int tw = std::max(MeasureText(t1.c_str(), 18), MeasureText(t2.c_str(), 16));
+                DrawRectangle((int)p.x + 12, (int)p.y - 50, tw + 20, 50, Fade(BLACK, 0.8f));
+                DrawText(t1.c_str(), (int)p.x + 22, (int)p.y - 44, 18, YELLOW);
+                DrawText(t2.c_str(), (int)p.x + 22, (int)p.y - 22, 16, RAYWHITE);
+            }
+        }
+        if (showCompass) drawCompass({panel.x + panel.width + 70, (float)sh - 150}, 42, map.style() == MapStyle::Fantasy);
+        if (showTitle) {
+            std::string t = nameBuf;
+            for (char& ch : t) ch = (char)std::toupper((unsigned char)ch);
+            float fsz = 40, spacing = 10;
+            Vector2 ts = MeasureTextEx(GetFontDefault(), t.c_str(), fsz, spacing);
+            float cx = (panel.x + panel.width + sw) / 2;
+            bool fantasy = map.style() == MapStyle::Fantasy;
+            Rectangle box{cx - ts.x / 2 - 30, 14, ts.x + 60, ts.y + 20};
+            DrawRectangleRec(box, fantasy ? Color{238, 224, 186, 235} : Fade(BLACK, 0.55f));
+            DrawRectangleLinesEx(box, 2, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
+            DrawRectangleLinesEx({box.x + 5, box.y + 5, box.width - 10, box.height - 10}, 1, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
+            DrawTextEx(GetFontDefault(), t.c_str(), {cx - ts.x / 2, 24}, fsz, spacing, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
+        }
+        if (showMini) {
+            DrawRectangle((int)miniRect.x - 3, (int)miniRect.y - 3, (int)miniRect.width + 6, (int)miniRect.height + 6, Fade(BLACK, 0.7f));
+            map.drawMini(miniRect);
+            float vw = (float)(sw / view.pxPerDeg / 360 * miniRect.width), vh = (float)(sh / view.pxPerDeg / 180 * miniRect.height);
+            float vx = (float)(miniRect.x + (view.centerLon + 180) / 360 * miniRect.width - vw / 2);
+            float vy = (float)(miniRect.y + (90 - view.centerLat) / 180 * miniRect.height - vh / 2);
+            BeginScissorMode((int)miniRect.x, (int)miniRect.y, (int)miniRect.width, (int)miniRect.height);
+            DrawRectangleLinesEx({vx, vy, std::max(4.f, vw), std::max(4.f, vh)}, 2, YELLOW);
+            if (vx < miniRect.x) DrawRectangleLinesEx({vx + miniRect.width, vy, std::max(4.f, vw), std::max(4.f, vh)}, 2, YELLOW);
+            if (vx + vw > miniRect.x + miniRect.width) DrawRectangleLinesEx({vx - miniRect.width, vy, std::max(4.f, vw), std::max(4.f, vh)}, 2, YELLOW);
+            EndScissorMode();
+        }
         // ---- Readouts ----
         const int fs = 18;
         double kmPerPx = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
@@ -1292,7 +1414,7 @@ int main() {
         DrawText("Scroll: zoom   Right/middle-drag or WASD: move", (int)(panel.x + panel.width) + 24, sh - 28, 16, Fade(th.text, 0.8f));
         EndDrawing();
         typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
-                 loreTitleEdit || loreBodyEdit || loreSearchEdit;
+                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit;
 
         // ---- Exports (after the frame, so the message above is visible while it works) ----
         static int exportFrames = 0;
