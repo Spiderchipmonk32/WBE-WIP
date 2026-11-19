@@ -67,6 +67,14 @@ void TileMap::setStyle(MapStyle s) {
     invalidateAll();   // old tiles stay on screen until the new ones arrive
 }
 
+int TileMap::nationAt(double lat, double lon) const {
+    if (!doc_ || doc_->owner.empty()) return -1;
+    // jitter the lookup so borders wiggle naturally instead of following the 55 km grid
+    double jl = paper_(lon * 1.7, lat * 1.7, 7.5) * 0.30 + paper_(lon * 6.0, lat * 6.0, 9.5) * 0.10;
+    double jo = paper_(lon * 1.7 + 40, lat * 1.7, 3.5) * 0.30 + paper_(lon * 6.0 + 40, lat * 6.0, 1.5) * 0.10;
+    return doc_->nationAt(World::nearestCell(clampd(lat + jl, -89.99, 89.99), lon + jo / std::max(0.2, std::cos(lat * kPi / 180))));
+}
+
 void TileMap::setOverlay(Overlay o, int param) {
     if (o == overlay_ && param == overlayParam_) return;
     overlay_ = o; overlayParam_ = param;
@@ -140,6 +148,12 @@ bool TileMap::overlayColor(Overlay o, int param, double lat, double lon, double 
             double an = World::sample(world_->seaTempAnomaly, lat, lon);
             if (std::fabs(an) < 0.4) return false;
             return an > 0 ? set(230, 70, 50, clampd(an / 6, 0, 0.6)) : set(60, 140, 255, clampd(-an / 6, 0, 0.6));
+        }
+        case Overlay::Population: {
+            if (world_->habitability.empty() || h <= 0) return false;
+            double v = World::sample(world_->habitability, lat, lon);
+            if (v < 0.03) return false;
+            return set(255, 230 - 190 * v, 60 - 40 * v, clampd(0.2 + v * 0.6, 0, 0.75));
         }
         case Overlay::Resource: {
             if (world_->selectedFavor.empty() || world_->selectedRes < 0) return false;
@@ -226,6 +240,20 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
         }
     }
 
+    // Nations: owner per pixel (with a border ring) so borders can be outlined
+    std::vector<int> own;
+    const bool political = j.overlay == Overlay::Political && doc_ && !doc_->owner.empty();
+    if (political) {
+        own.assign(B * B, -1);
+        for (int by = 0; by < B; by++) {
+            double lat = clampd(90 - (j.ty + (by - 1 + 0.5) / N) * T, -89.9999, 89.9999);
+            for (int bx = 0; bx < B; bx++) {
+                if (H[by * B + bx] <= 0) continue;
+                double lon = -180 + (j.tx + (bx - 1 + 0.5) / N) * T;
+                own[by * B + bx] = nationAt(lat, lon);
+            }
+        }
+    }
     out.assign(N * N * 4, 255);
     const double dyM = T / N * kmPerDeg * 1000;
     const double exag = 2.0 * std::max(1.0, std::sqrt(dyM / 30.0));      // stronger relief shading when zoomed out
@@ -247,9 +275,14 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
             bool coast = land && (hl <= 0 || hr <= 0 || hu <= 0 || hd <= 0);
             // lakes: fine terrain below the lake's water level
             double lakeDepth = 0, salt = 0;
-            if (land && world_ && !world_->lakeSurface.empty()) {
-                double surf = World::sample(world_->lakeSurface, lat, lon);
-                if (surf > h) lakeDepth = surf - h;
+            if (land && world_ && !world_->lakeMask.empty()) {
+                double m = World::sample(world_->lakeMask, lat, lon);
+                if (m > 0.3) {
+                    double surf = World::sample(world_->lakeSurface, lat, lon);
+                    double cell = world_->lakeSurface[World::nearestCell(lat, lon)];
+                    surf = std::max(surf, cell);
+                    if (surf > h) lakeDepth = surf - h;
+                }
                 if (lakeDepth <= 0) salt = World::sample(world_->saltMask, lat, lon);
             }
             RGB col;
@@ -302,7 +335,16 @@ void TileMap::render(const Job& j, std::vector<unsigned char>& out) const {
             } else if (salt > 0.5 && j.style != MapStyle::Elevation) {
                 col = mixc(col, RGB{236, 232, 220}, smoothstepd(0.5, 0.8, salt) * 0.85);
             }
-            if (j.overlay != Overlay::None) {
+            if (political) {
+                int o = own[c];
+                if (o >= 0 && o < (int)doc_->nations.size()) {
+                    const Nation& nt = doc_->nations[o];
+                    bool border = own[c - 1] != o || own[c + 1] != o || own[c - B] != o || own[c + B] != o;
+                    RGB nc{(double)nt.r, (double)nt.g, (double)nt.b};
+                    if (border && !coast) col = mixc(col, scale(nc, 0.45), 0.85);
+                    else col = mixc(col, nc, j.style == MapStyle::Fantasy ? 0.32 : 0.42);
+                }
+            } else if (j.overlay != Overlay::None) {
                 double oc[3], oa;
                 if (overlayColor(j.overlay, j.param, lat, lon, h, oc, oa)) col = mixc(col, RGB{oc[0], oc[1], oc[2]}, oa);
             }

@@ -214,6 +214,17 @@ void World::generateTectonics(const Planet& planet, int seed, int plateCount, do
         uplift[i] = (float)u;
     }
 
+    // Soften the edges between plates a little so the sea floor doesn't look blocky
+    for (int pass = 0; pass < 2; pass++) {
+        std::vector<float> u2(N);
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                int i = y * W + x;
+                u2[i] = (uplift[i] * 4 + uplift[idx(x + 1, y)] + uplift[idx(x - 1, y)] + uplift[idx(x, y + 1)] + uplift[idx(x, y - 1)]) / 8;
+            }
+        uplift.swap(u2);
+    }
+
     // 6. Hotspots: chains of volcanic islands left behind as plates drift over them
     volcanoes.clear();
     int hotspots = 3 + (int)(rnd01(s) * 4);

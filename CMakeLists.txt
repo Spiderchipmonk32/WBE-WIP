@@ -40,6 +40,8 @@ add_executable(Worldbuilder
   src/rivers.cpp
   src/persistence.cpp
   src/document.cpp
+  src/names.cpp
+  src/politics.cpp
   src/raygui_impl.c)
 target_include_directories(Worldbuilder PRIVATE src ${raygui_SOURCE_DIR}/src)
 find_package(Threads REQUIRED)

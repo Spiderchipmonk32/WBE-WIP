@@ -5,6 +5,24 @@ and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest 
 
 ## Done
 
+### Nations, cultures and cities (Nations and Cities tabs)
+- **Cultures** with their own naming languages (Nordic, Latin, Slavic, Eastern, Desert, Elvish,
+  Celtic, Mesoamerican), so every nation's towns sound related.
+- **Generate nations, cultures and cities** in one click: nations grow from the best land, with
+  borders that tend to follow mountains, big rivers and deserts. Ice, deserts and remote land stay
+  unclaimed for you to fill.
+- Every nation has a name, colour, government (kingdom, empire, republic, theocracy, magocracy...),
+  culture and notes; edit any of them, add or delete nations, and **paint or erase territory** with a brush.
+- **Political map overlay** with wavy, natural-looking borders and nation names sized to their territory.
+- **Cities** are placed on the best sites (rivers, coasts, fertile flat land) with capitals and realistic
+  population spreads. Click a city (map or list) to rename it, set its population or capital status,
+  add notes, jump to it or delete it. **Place new city** founds one where you click, named in the local
+  culture. **Show good sites** highlights the best unclaimed spots.
+- Cities appear on the map by importance as you zoom in, with labels and hover cards.
+- **Population density overlay** shows where people would naturally live.
+- Nations, cultures, cities and territory are all saved in world files.
+- Also fixed: false lakes in valleys and blocky sea floor at plate edges.
+
 ### Save, load, autosave and exports (File tab)
 - **Save** your world under a name; **Load** any saved world from the list. Worlds are stored in a
   `worlds` folder next to the program as small text files: the settings and seed rebuild everything

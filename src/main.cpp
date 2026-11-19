@@ -6,10 +6,12 @@
 #include "tilemap.h"
 #include "ui.h"
 #include "persistence.h"
+#include "politics.h"
 #include <vector>
 #include <thread>
 #include <fstream>
 #include <cstring>
+#include <cctype>
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
@@ -99,6 +101,28 @@ struct App {
     World world;
     Document doc;
     int styleUi = 0;
+    bool labelsDirty = true;
+    struct Label { double lat, lon, areaKm2; };
+    std::vector<Label> nationLabels;
+    void updateLabels() {
+        if (!labelsDirty) return;
+        labelsDirty = false;
+        nationLabels.assign(doc.nations.size(), Label{0, 0, 0});
+        std::vector<Vec3d> sum(doc.nations.size(), Vec3d{0, 0, 0});
+        double ck = world.cellKm();
+        for (int i = 0; i < (int)doc.owner.size(); i++) {
+            int n = doc.nationAt(i);
+            if (n < 0 || n >= (int)sum.size()) continue;
+            double a = ck * ck * std::max(0.02, std::cos(World::cellLat(i / World::W) * kPi / 180));
+            sum[n] += world.cellDir[i] * a;
+            nationLabels[n].areaKm2 += a;
+        }
+        for (size_t n = 0; n < sum.size(); n++) {
+            Vec3d d = sum[n].normalized();
+            nationLabels[n].lat = std::asin(clampd(d.y, -1, 1)) * 180 / kPi;
+            nationLabels[n].lon = std::atan2(d.x, d.z) * 180 / kPi;
+        }
+    }
     TileMap* map = nullptr;
     PlanetStats stats;
     MapView view;
@@ -112,7 +136,11 @@ struct App {
         world.generateClimate(ui.axialTilt);
         planet.setClimate(&world.tempSeaLevel, &world.rainfallYear);
         world.generateRivers();
+        world.generateHabitability();
         world.generateResources(ui.seed);
+        doc = Document{};
+        doc.ensureOwner(World::W * World::H);
+        labelsDirty = true;
         world.selectedFavor.clear();
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
         map->reset();
@@ -132,6 +160,8 @@ struct App {
         view.centerLon = d.viewLon; view.centerLat = d.viewLat; view.pxPerDeg = d.viewZoom;
         styleUi = d.style;
         doc = d.doc;
+        doc.ensureOwner(World::W * World::H);
+        labelsDirty = true;
     }
     // After sculpting or changing the tilt: re-run the climate on the new terrain
     void recalcClimate() {
@@ -139,6 +169,7 @@ struct App {
         world.sampleElevation(planet);
         world.generateClimate(ui.axialTilt);
         world.generateRivers();
+        world.generateHabitability();
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
         map->invalidateAll();
     }
@@ -157,6 +188,7 @@ int main() {
     TileMap map(&app.planet);
     app.map = &map;
     map.setWorld(&app.world);
+    map.setDocument(&app.doc);
     app.regenerate();
 
     MapView& view = app.view;
@@ -182,6 +214,21 @@ int main() {
         platesUi = (float)app.ui.plateCount; activityUi = app.ui.tectonicActivity; tiltUi = app.ui.axialTilt;
     };
     auto setStatus = [&](const std::string& t) { status = t; statusTime = GetTime(); };
+    int nationSel = -1, nationScroll = 0, polTool = 0;
+    float nationCountUi = 40, cityDensityUi = 1;
+    char nationNameBuf[64] = "", nationNotesBuf[256] = "";
+    bool nationNameEdit = false, nationNotesEdit = false;
+    int citySel = -1, cityScroll = 0, cityTool = 0;
+    char cityNameBuf[64] = "", cityNotesBuf[256] = "";
+    bool cityNameEdit = false, cityNotesEdit = false, showSites = false, showCities = true, showLabels = true;
+    std::vector<std::pair<double, double>> sites;
+    int lastNationSel = -2, lastCitySel = -2;
+    auto randomColor = [](unsigned char& r, unsigned char& g, unsigned char& b) {
+        double hue = GetRandomValue(0, 5999) / 1000.0; int hi = (int)hue; double f = hue - hi;
+        double rgb[6][3] = {{1, f, 0}, {1 - f, 1, 0}, {0, 1, f}, {0, 1 - f, 1}, {f, 0, 1}, {1, 0, 1 - f}};
+        r = (unsigned char)(70 + 160 * rgb[hi][0]); g = (unsigned char)(70 + 160 * rgb[hi][1]); b = (unsigned char)(70 + 160 * rgb[hi][2]);
+    };
+    auto cleanList = [](std::string t) { for (char& ch : t) if (ch == ';' || ch == '\n') ch = ','; return t; };
     int climateViewUi = -1;
     float brushT = 0.80f, strengthT = 0.851f;
 
@@ -195,8 +242,24 @@ int main() {
         const Vector2 mouse = GetMousePosition();
         const bool overPanel = CheckCollisionPointRec(mouse, panel);
         const double minZoom = sh / 180.0, maxZoom = TileMap::TILE / 90.0 * (1 << TileMap::MAX_LEVEL) * 2;
-        const bool sculptTab = (tab == 2);
+        const bool sculptTab = (tab == TabSculpt);
         const int activeTool = sculptTab ? tool : 0;
+        const bool paintingTerritory = tab == TabNations && polTool > 0 && nationSel >= 0;
+        const bool placingCity = tab == TabCities && cityTool == 1;
+        const bool anyTool = activeTool > 0 || paintingTerritory || placingCity;
+        app.updateLabels();
+        // city under the mouse (for selecting and tooltips)
+        int hoverCity = -1;
+        if (showCities && !overPanel) {
+            float best = 10;
+            for (int i = 0; i < (int)app.doc.cities.size(); i++) {
+                const City& c = app.doc.cities[i];
+                double dl = std::remainder(c.lon - view.centerLon, 360.0);
+                float x = (float)(sw / 2.0 + dl * view.pxPerDeg), y = (float)(sh / 2.0 - (c.lat - view.centerLat) * view.pxPerDeg);
+                float d = std::sqrt((x - mouse.x) * (x - mouse.x) + (y - mouse.y) * (y - mouse.y));
+                if (d < best) { best = d; hoverCity = i; }
+            }
+        }
 
         // ---- Navigation ----
         float wheel = overPanel ? 0 : GetMouseWheelMove();
@@ -207,8 +270,13 @@ int main() {
             view.centerLon = lon0 - (mouse.x - sw / 2.0) / view.pxPerDeg;
             view.centerLat = lat0 + (mouse.y - sh / 2.0) / view.pxPerDeg;
         }
+        bool clickedCity = false;
+        if (!overPanel && !anyTool && hoverCity >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            citySel = hoverCity; clickedCity = true;
+            if (tab != TabCities) tab = TabCities;
+        }
         if (!overPanel && (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) ||
-                           (activeTool == 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))))
+                           (!anyTool && !clickedCity && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))))
             panning = true;
         if (!IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) && !IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !IsMouseButtonDown(MOUSE_BUTTON_RIGHT))
             panning = false;
@@ -260,6 +328,34 @@ int main() {
             painting = false;
             app.stats = app.planet.computeStats();
         }
+        if (paintingTerritory && hit && IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+            double ang = brushKm / R;
+            int cx, cy; World::cellOf(mLat, mLon, cx, cy);
+            int ry = (int)std::ceil(brushKm / app.world.cellKm()) + 1;
+            int rx = std::min(World::W / 2, (int)std::ceil(ry / std::max(0.05, std::cos(mLat * kPi / 180))) + 1);
+            uint16_t v = polTool == 1 ? (uint16_t)(nationSel + 1) : 0;
+            for (int dy = -ry; dy <= ry; dy++)
+                for (int dx = -rx; dx <= rx; dx++) {
+                    int c = World::idx(cx + dx, cy + dy);
+                    if (app.world.elev[c] <= 0) continue;
+                    if (angleBetween(app.world.cellDir[c], hitDir) <= ang) app.doc.owner[c] = v;
+                }
+            map.invalidate(hitDir, brushKm * 1.3 + 60);
+            app.labelsDirty = true;
+        }
+        if (placingCity && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            City c;
+            c.lat = mLat; c.lon = mLon;
+            c.nation = map.nationAt(mLat, mLon);
+            c.culture = c.nation >= 0 ? app.doc.nations[c.nation].culture : 0;
+            uint32_t ns = (uint32_t)GetRandomValue(1, 1 << 30);
+            NameStyle st = c.culture >= 0 && c.culture < (int)app.doc.cultures.size() ? app.doc.cultures[c.culture].style : NameStyle::Latin;
+            c.name = makeName(st, ns, true);
+            int cell = World::nearestCell(mLat, mLon);
+            c.population = app.world.siteScore.empty() ? 5000 : (int)(2000 + 200000 * app.world.siteScore[cell]);
+            app.doc.cities.push_back(c);
+            citySel = (int)app.doc.cities.size() - 1;
+        }
         auto doUndo = [&]() {
             for (auto& a : app.planet.undo()) map.invalidate(a.first, a.second * 1.1);
             app.stats = app.planet.computeStats();
@@ -297,6 +393,58 @@ int main() {
         }
         if (showGrid) drawGrid(view, sw, sh, (int)(panel.x + panel.width), th.grid);
         Overlay ov = map.overlay();
+        // ---- Nation names ----
+        if (showLabels && ov == Overlay::Political) {
+            double kmPerPxL = 111.195 * R / 6371.0 / view.pxPerDeg;
+            for (size_t n = 0; n < app.doc.nations.size() && n < app.nationLabels.size(); n++) {
+                const auto& lb = app.nationLabels[n];
+                if (lb.areaKm2 <= 0) continue;
+                float size = (float)clampd(std::sqrt(lb.areaKm2) / kmPerPxL * 0.11, 0, 64);
+                if (size < 11) continue;
+                Vector2 p = toScreen(lb.lat, lb.lon);
+                std::string up = app.doc.nations[n].name;
+                for (char& ch : up) ch = (char)std::toupper((unsigned char)ch);
+                float spacing = size * 0.35f;
+                Vector2 ts = MeasureTextEx(GetFontDefault(), up.c_str(), size, spacing);
+                Vector2 at{p.x - ts.x / 2, p.y - ts.y / 2};
+                if (at.x + ts.x < panel.x + panel.width || at.x > sw) continue;
+                bool fantasy = map.style() == MapStyle::Fantasy;
+                if (!fantasy) DrawTextEx(GetFontDefault(), up.c_str(), {at.x + 1.5f, at.y + 1.5f}, size, spacing, Fade(BLACK, 0.6f));
+                DrawTextEx(GetFontDefault(), up.c_str(), at, size, spacing, fantasy ? Color{80, 50, 30, 220} : Fade(RAYWHITE, 0.92f));
+            }
+        }
+        // ---- Cities ----
+        if (showCities) {
+            bool fantasy = map.style() == MapStyle::Fantasy;
+            for (int i = 0; i < (int)app.doc.cities.size(); i++) {
+                const City& c = app.doc.cities[i];
+                // show bigger places first as you zoom in
+                double need = c.capital ? 3.0 : (c.population > 500000 ? 8 : (c.population > 100000 ? 14 : (c.population > 20000 ? 24 : 40)));
+                if (view.pxPerDeg < need && i != citySel) continue;
+                Vector2 p = toScreen(c.lat, c.lon);
+                if (p.x < panel.x + panel.width || p.x > sw || p.y < 0 || p.y > sh) continue;
+                float r = (float)clampd(2 + std::log10(std::max(100, c.population)) - 3, 2.5, 6);
+                Color fill = fantasy ? Color{60, 40, 25, 255} : RAYWHITE;
+                if (c.capital) {
+                    DrawCircleV(p, r + 3, BLACK); DrawCircleV(p, r + 2, fill); DrawCircleV(p, r - 0.5f, BLACK);
+                } else {
+                    DrawCircleV(p, r + 1, BLACK); DrawCircleV(p, r, fill);
+                }
+                if (i == citySel) DrawCircleLines((int)p.x, (int)p.y, r + 7, YELLOW);
+                if (showLabels && view.pxPerDeg >= need * 1.6) {
+                    int fsz = c.capital ? 18 : (c.population > 100000 ? 16 : 14);
+                    if (!fantasy) DrawText(c.name.c_str(), (int)p.x + 9, (int)p.y - 7, fsz, BLACK);
+                    DrawText(c.name.c_str(), (int)p.x + 8, (int)p.y - 8, fsz, fantasy ? Color{60, 40, 25, 255} : RAYWHITE);
+                }
+            }
+        }
+        if (showSites && tab == TabCities) {
+            for (auto& st : sites) {
+                Vector2 p = toScreen(st.first, st.second);
+                DrawCircleLines((int)p.x, (int)p.y, 9, GREEN);
+                DrawCircleLines((int)p.x, (int)p.y, 10, DARKGREEN);
+            }
+        }
 
         if (ov == Overlay::Plates) {   // plate motion arrows
             const float stepPx = 70;
@@ -360,7 +508,7 @@ int main() {
                 if (dd < bestD) { bestD = dd; hoverDeposit = i; }
             }
         }
-        if (hit && activeTool > 0) {
+        if (hit && (activeTool > 0 || paintingTerritory)) {
             double kmPerDeg = 111.195 * R / 6371.0;
             float ry = (float)(brushKm / kmPerDeg * view.pxPerDeg);
             float rx = (float)(ry / std::max(0.02, std::cos(mLat * kPi / 180)));
@@ -407,8 +555,10 @@ int main() {
             L.check("Volcano markers", &showVolcanoes);
             L.check("Rivers", &showRivers);
             L.heading("OVERLAY");
-            GuiListView(Rectangle{L.x, L.y, L.w, 200}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab);Temperature;Rainfall;Biomes;Wind;Ocean currents", &overlayScroll, &overlayUi);
+            GuiListView(Rectangle{L.x, L.y, L.w, 200}, "None;Tectonic plates;Rock types;Earthquake zones;Resource (see Resources tab);Temperature;Rainfall;Biomes;Wind;Ocean currents;Nations (political);Population density", &overlayScroll, &overlayUi);
             L.y += 210;
+            L.check("City markers", &showCities);
+            L.check("Names and labels", &showLabels);
             // legend
             if (overlayUi == 1) {
                 L.legend(Color{200, 30, 30, 255}, "Converging (mountains, trenches)");
@@ -515,7 +665,146 @@ int main() {
             if (L.button("Heightmap (16-bit RAW + PNG)")) pendingExport = 3;
             if (L.button("Resource deposits (CSV)")) pendingExport = 4;
             L.note(("Files go in: " + exportsFolder()).c_str());
-        } else if (tab >= TabNations && tab <= TabLore) {
+        } else if (tab == TabNations) {
+            L.heading("GENERATE");
+            L.label(TextFormat("Number of nations: %d", (int)nationCountUi)); L.slider(&nationCountUi, 3, 120);
+            L.label(TextFormat("Cities per nation: x%.1f", cityDensityUi)); L.slider(&cityDensityUi, 0.2f, 3);
+            if (L.button("Generate nations, cultures and cities")) {
+                map.waitIdle();
+                generateCultures(app.doc, std::max(3, (int)nationCountUi / 6), (uint32_t)app.ui.seed + 5u);
+                generateNations(app.doc, app.world, (int)nationCountUi, (uint32_t)app.ui.seed + 17u);
+                generateCities(app.doc, app.world, cityDensityUi, (uint32_t)app.ui.seed + 29u);
+                app.labelsDirty = true; nationSel = -1; citySel = -1;
+                overlayUi = 10;
+                map.invalidateAll();
+            }
+            L.heading("NATIONS");
+            std::string items;
+            for (auto& n : app.doc.nations) { if (!items.empty()) items += ";"; items += cleanList(n.name); }
+            GuiListView(Rectangle{L.x, L.y, L.w, 130}, items.c_str(), &nationScroll, &nationSel);
+            L.y += 138;
+            if (nationSel >= (int)app.doc.nations.size()) nationSel = -1;
+            float bw = (L.w - 8) / 2;
+            if (GuiButton(Rectangle{L.x, L.y, bw, 28}, "New nation")) {
+                Nation n; uint32_t ns = (uint32_t)GetRandomValue(1, 1 << 30);
+                if (app.doc.cultures.empty()) generateCultures(app.doc, 4, (uint32_t)app.ui.seed + 5u);
+                n.culture = GetRandomValue(0, (int)app.doc.cultures.size() - 1);
+                n.name = makeName(app.doc.cultures[n.culture].style, ns, true);
+                randomColor(n.r, n.g, n.b);
+                app.doc.nations.push_back(n);
+                nationSel = (int)app.doc.nations.size() - 1;
+                polTool = 1; overlayUi = 10; app.labelsDirty = true;
+            }
+            if (GuiButton(Rectangle{L.x + bw + 8, L.y, bw, 28}, "Delete nation") && nationSel >= 0) {
+                map.waitIdle();
+                app.doc.removeNation(nationSel);
+                nationSel = -1; app.labelsDirty = true;
+                map.invalidateAll();
+            }
+            L.y += 36;
+            if (nationSel != lastNationSel) {
+                lastNationSel = nationSel; nationNameEdit = nationNotesEdit = false;
+                if (nationSel >= 0) {
+                    std::strncpy(nationNameBuf, app.doc.nations[nationSel].name.c_str(), 63);
+                    std::strncpy(nationNotesBuf, app.doc.nations[nationSel].notes.c_str(), 255);
+                }
+            }
+            if (nationSel >= 0) {
+                Nation& n = app.doc.nations[nationSel];
+                GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Name");
+                if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60 - 36, 28}, nationNameBuf, 63, nationNameEdit)) nationNameEdit = !nationNameEdit;
+                if (nationNameEdit || n.name != nationNameBuf) { n.name = nationNameBuf; app.labelsDirty = true; }
+                DrawRectangle((int)(L.x + L.w - 28), (int)L.y, 28, 28, Color{n.r, n.g, n.b, 255});
+                L.y += 34;
+                if (GuiButton(Rectangle{L.x, L.y, bw, 26}, "New colour")) { map.waitIdle(); randomColor(n.r, n.g, n.b); map.invalidateAll(); }
+                int gov = n.government;
+                GuiComboBox(Rectangle{L.x + bw + 8, L.y, bw, 26}, "Kingdom;Empire;Republic;Theocracy;Tribal conf.;Merchant league;Dictatorship;Democracy;City-state;Magocracy", &gov);
+                n.government = gov;
+                L.y += 32;
+                std::string cults;
+                for (auto& c : app.doc.cultures) { if (!cults.empty()) cults += ";"; cults += cleanList(c.name) + " (" + nameStyleName(c.style) + ")"; }
+                if (!app.doc.cultures.empty()) {
+                    GuiLabel(Rectangle{L.x, L.y, 70, 26}, "Culture");
+                    GuiComboBox(Rectangle{L.x + 70, L.y, L.w - 70, 26}, cults.c_str(), &n.culture);
+                    L.y += 32;
+                }
+                GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Notes");
+                if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60, 28}, nationNotesBuf, 255, nationNotesEdit)) nationNotesEdit = !nationNotesEdit;
+                n.notes = nationNotesBuf;
+                L.y += 34;
+                std::vector<double> area; std::vector<long long> pop;
+                nationStats(app.doc, app.world, area, pop);
+                int ncity = 0; std::string cap = "none";
+                for (auto& c : app.doc.cities) if (c.nation == nationSel) { ncity++; if (c.capital) cap = c.name; }
+                L.label(TextFormat("Area: %.0f km2   Cities: %d", area[nationSel], ncity));
+                L.label(TextFormat("Population: %lld   Capital: %s", pop[nationSel], cap.c_str()));
+                L.heading("TERRITORY BRUSH");
+                GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Off;Paint;Erase", &polTool);
+                L.y += 36;
+                L.label(TextFormat("Brush radius: %s", formatKm(brushKm))); L.slider(&brushT, 0, 1);
+            } else {
+                polTool = 0;
+                L.note("Select a nation to rename it, change its colour, government and culture, or paint its territory.");
+            }
+        } else if (tab == TabCities) {
+            L.heading("CITIES");
+            GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 4) / 2, 28}, "Select;Place new city", &cityTool);
+            L.y += 36;
+            bool prevSites = showSites;
+            L.check("Show good sites for new cities", &showSites);
+            if (showSites && (!prevSites || sites.empty())) sites = suggestSites(app.doc, app.world, 40);
+            std::vector<int> order;
+            for (int i = 0; i < (int)app.doc.cities.size(); i++) order.push_back(i);
+            std::sort(order.begin(), order.end(), [&](int a, int b) { return app.doc.cities[a].population > app.doc.cities[b].population; });
+            std::string items;
+            int activeRow = -1;
+            for (size_t k = 0; k < order.size(); k++) {
+                const City& c = app.doc.cities[order[k]];
+                if (!items.empty()) items += ";";
+                items += cleanList(c.name) + (c.capital ? " *" : "");
+                if (order[k] == citySel) activeRow = (int)k;
+            }
+            int prevRow = activeRow;
+            GuiListView(Rectangle{L.x, L.y, L.w, 170}, items.c_str(), &cityScroll, &activeRow);
+            L.y += 178;
+            if (activeRow != prevRow) citySel = activeRow >= 0 && activeRow < (int)order.size() ? order[activeRow] : -1;
+            if (citySel >= (int)app.doc.cities.size()) citySel = -1;
+            if (citySel != lastCitySel) {
+                lastCitySel = citySel; cityNameEdit = cityNotesEdit = false;
+                if (citySel >= 0) {
+                    std::strncpy(cityNameBuf, app.doc.cities[citySel].name.c_str(), 63);
+                    std::strncpy(cityNotesBuf, app.doc.cities[citySel].notes.c_str(), 255);
+                }
+            }
+            if (citySel >= 0) {
+                City& c = app.doc.cities[citySel];
+                GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Name");
+                if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60, 28}, cityNameBuf, 63, cityNameEdit)) cityNameEdit = !cityNameEdit;
+                c.name = cityNameBuf;
+                L.y += 34;
+                float lp = (float)std::log10(std::max(100, c.population));
+                L.label(TextFormat("Population: %d", c.population)); L.slider(&lp, 2, 7.2f);
+                c.population = (int)std::pow(10.0, (double)lp);
+                bool cap = c.capital;
+                L.check("Capital of its nation", &cap);
+                if (cap != c.capital) {
+                    if (cap) for (auto& o : app.doc.cities) if (o.nation == c.nation) o.capital = false;
+                    c.capital = cap;
+                }
+                L.label(TextFormat("Nation: %s", c.nation >= 0 && c.nation < (int)app.doc.nations.size() ? app.doc.nations[c.nation].name.c_str() : "independent"));
+                L.label(TextFormat("Location: %.2f, %.2f", c.lat, c.lon));
+                GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Notes");
+                if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60, 28}, cityNotesBuf, 255, cityNotesEdit)) cityNotesEdit = !cityNotesEdit;
+                c.notes = cityNotesBuf;
+                L.y += 34;
+                float bw2 = (L.w - 8) / 2;
+                if (GuiButton(Rectangle{L.x, L.y, bw2, 28}, "Go to city")) { view.centerLat = c.lat; view.centerLon = c.lon; view.pxPerDeg = std::max(view.pxPerDeg, 40.0); }
+                if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, "Delete city")) { app.doc.removeCity(citySel); citySel = -1; }
+                L.y += 36;
+            } else {
+                L.note("Click a city on the map or in the list to edit it. Use 'Place new city' and click the map to found one.");
+            }
+        } else if (tab >= TabTrade && tab <= TabLore) {
             L.heading("COMING SOON");
             L.note("This part of the world builder is still being built. See PROGRESS.md in the project for what's done.");
         } else if (tab == 2) {
@@ -530,7 +819,8 @@ int main() {
         }
         if ((MapStyle)styleUi != map.style()) map.setStyle((MapStyle)styleUi);
         static const Overlay overlayList[] = {Overlay::None, Overlay::Plates, Overlay::Rock, Overlay::Earthquakes, Overlay::Resource,
-                                              Overlay::Temperature, Overlay::Rainfall, Overlay::Biomes, Overlay::Wind, Overlay::Currents};
+                                              Overlay::Temperature, Overlay::Rainfall, Overlay::Biomes, Overlay::Wind, Overlay::Currents,
+                                              Overlay::Political, Overlay::Population};
         const int overlayCount = (int)(sizeof(overlayList) / sizeof(overlayList[0]));
         if (overlayUi < 0) overlayUi = 0;
         {
@@ -556,6 +846,9 @@ int main() {
                     [&]{ float lo = 1e9f; for (int m = 0; m < 12; m++) lo = std::min(lo, app.world.tempMonth[m][c]); return lo; }(),
                     [&]{ float hi = -1e9f; for (int m = 0; m < 12; m++) hi = std::max(hi, app.world.tempMonth[m][c]); return hi; }(),
                     app.world.rainfallYear[c]));
+            int nat = map.nationAt(mLat, mLon);
+            if (nat >= 0 && nat < (int)app.doc.nations.size())
+                clim += std::string("   |   ") + app.doc.nations[nat].name + " (" + kGovernments[app.doc.nations[nat].government] + ")";
             std::string lines[6] = {
                 TextFormat("%.4f %c, %.4f %c", std::fabs(mLat), mLat >= 0 ? 'N' : 'S', std::fabs(mLon), mLon >= 0 ? 'E' : 'W'),
                 TextFormat("%s %.0f m", e > 0 ? "Elevation" : "Depth", std::fabs(e)),
@@ -570,6 +863,19 @@ int main() {
             int bh = 6 * 22 + 14;
             DrawRectangle(sw - tw - 30, sh - bh - 10, tw + 20, bh, Fade(BLACK, 0.6f));
             for (int i = 0; i < 6; i++) DrawText(lines[i].c_str(), sw - tw - 20, sh - bh - 3 + i * 22, fs, RAYWHITE);
+        }
+        if (hoverCity >= 0 && hoverDeposit < 0) {
+            const City& c = app.doc.cities[hoverCity];
+            std::string t1 = c.name + (c.capital ? " (capital)" : "");
+            std::string t2 = TextFormat("Population %d", c.population);
+            std::string t3 = c.nation >= 0 && c.nation < (int)app.doc.nations.size() ? app.doc.nations[c.nation].name : std::string("Independent");
+            int tw = std::max({MeasureText(t1.c_str(), 18), MeasureText(t2.c_str(), 18), MeasureText(t3.c_str(), 18)});
+            int bx = (int)mouse.x + 16, by = (int)mouse.y + 10;
+            if (bx + tw + 20 > sw) bx = (int)mouse.x - tw - 36;
+            DrawRectangle(bx, by, tw + 20, 3 * 22 + 12, Fade(BLACK, 0.75f));
+            DrawText(t1.c_str(), bx + 10, by + 6, 18, YELLOW);
+            DrawText(t2.c_str(), bx + 10, by + 28, 18, RAYWHITE);
+            DrawText(t3.c_str(), bx + 10, by + 50, 18, RAYWHITE);
         }
         if (hoverDeposit >= 0) {
             const Deposit& dp = app.world.deposits[hoverDeposit];

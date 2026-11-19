@@ -1,6 +1,7 @@
 #pragma once
 #include "planet.h"
 #include "world.h"
+#include "document.h"
 #include "raylib.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -39,6 +40,9 @@ public:
     void setStyle(MapStyle s);
     MapStyle style() const { return style_; }
     void setWorld(const World* w) { world_ = w; }
+    void setDocument(const Document* d) { doc_ = d; }
+    // Nation at a point, with the same wavy borders the map draws (-1 = none)
+    int nationAt(double lat, double lon) const;
     void setOverlay(Overlay o, int param);   // param: month for climate, resource id for resources
     Overlay overlay() const { return overlay_; }
     void invalidate(const Vec3d& dir, double radiusKm);   // redraw the area a brush touched
@@ -75,6 +79,7 @@ private:
 
     const Planet* planet_;
     const World* world_ = nullptr;
+    const Document* doc_ = nullptr;
     MapStyle style_ = MapStyle::Realistic;
     Overlay overlay_ = Overlay::None;
     int overlayParam_ = 0;

@@ -111,9 +111,15 @@ public:
     std::vector<float> lakeSurface;    // lake water level (m); below the ground where there's no lake
     std::vector<uint8_t> lakeType;     // 0 none, 1 lake, 2 salt flat
     std::vector<float> saltMask;       // 1 on salt flats (for smooth drawing)
+    std::vector<float> lakeMask;       // 1 on lakes
     struct River { std::vector<Vec3d> pts; std::vector<float> q; int mouthCell; };
     std::vector<River> rivers;
     float maxDischarge = 0;
+
+    // ---- people (politics.cpp) ----
+    void generateHabitability();
+    std::vector<float> habitability;   // 0..1: how good a place is to live (climate, water, land, coast)
+    std::vector<float> siteScore;      // 0..1: how good a spot is for a city
 
     double radiusKm = 6371;
     std::vector<Vec3d> cellDir;         // unit direction per cell

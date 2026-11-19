@@ -69,10 +69,10 @@ void World::generateRivers() {
     for (int i = 0; i < N; i++) if (elev[i] > 0) maxDischarge = std::max(maxDischarge, discharge[i]);
 
     // Lakes where basins filled up; in dry places they dry out into salt flats
-    lakeSurface.assign(N, 0);
+    lakeSurface.assign(N, -20000);
+    lakeMask.assign(N, 0);
     saltMask.assign(N, 0);
     for (int i = 0; i < N; i++) {
-        lakeSurface[i] = elev[i] - 60;
         if (elev[i] <= 0) continue;
         double depth = level[i] - elev[i];
         if (depth > 4) {
@@ -80,9 +80,25 @@ void World::generateRivers() {
             double T = tempYear.empty() ? 10 : tempYear[i];
             bool wet = P > 450 || discharge[i] > 400 || T < 2;   // cold basins hold (frozen) lakes
             lakeType[i] = wet ? 1 : 2;
-            if (wet) lakeSurface[i] = level[i];
+            if (wet) { lakeSurface[i] = level[i]; lakeMask[i] = 1; }
             else saltMask[i] = 1;
         }
+    }
+
+    // Spread each lake's level one cell outwards so the shoreline can follow the fine terrain
+    {
+        std::vector<float> ls = lakeSurface;
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++) {
+                int i = y * W + x;
+                if (lakeMask[i] > 0) continue;
+                for (int dy = -1; dy <= 1; dy++)
+                    for (int dx = -1; dx <= 1; dx++) {
+                        int n = idx(x + dx, y + dy);
+                        if (lakeMask[n] > 0) ls[i] = std::max(ls[i], lakeSurface[n]);
+                    }
+            }
+        lakeSurface.swap(ls);
     }
 
     // River lines: start at headwaters where flow first passes a threshold, follow downstream
