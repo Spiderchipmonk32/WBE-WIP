@@ -6,6 +6,7 @@
 #include <cstdint>
 
 class Planet;
+struct PlanetSettings;
 
 // A coarse global grid (0.5 degree cells, about 55 km at the equator) that the
 // simulations run on: tectonics, rock, resources, climate, rivers, nations...
@@ -83,7 +84,9 @@ public:
     static int nearestCell(double lat, double lon) { int x, y; cellOf(lat, lon, x, y); return idx(x, y); }
 
     // ---- tectonics (tectonics.cpp) ----
-    void generateTectonics(const Planet& planet, int seed, int plateCount, double activity);
+    // edits: the user's plate changes and drift time (may be null)
+    void generateTectonics(const Planet& planet, int seed, int plateCount, double activity, const PlanetSettings* edits = nullptr);
+    std::vector<uint8_t> plateRemoved;  // per plate: merged away by the user
     std::vector<Plate> plates;
     std::vector<uint8_t> plateId;       // plate per cell
     std::vector<uint8_t> boundary;      // Boundary per cell (only on boundary cells)

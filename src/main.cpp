@@ -256,7 +256,7 @@ struct App {
             else planet.clearImport();
         } else planet.clearImport();
         planet.generate(ui);
-        world.generateTectonics(planet, ui.seed, ui.plateCount, ui.tectonicActivity);
+        world.generateTectonics(planet, ui.seed, ui.plateCount, ui.tectonicActivity, &ui);
         planet.setUplift(&world.uplift);
         world.sampleElevation(planet);
         world.generateClimate(ui.axialTilt, ui.tempOffset, ui.rainMultiplier);
@@ -306,6 +306,28 @@ struct App {
         appliedYear = INT_MIN; lastEventStrokes.clear();
     }
     // After sculpting or changing the tilt: re-run the climate on the new terrain
+    // Re-run the plates (after the user moved them) keeping sculpting, nations, cities and lore
+    void rebuildPlates() {
+        map->waitIdle();
+        planet.setUplift(nullptr);
+        planet.setErosion(nullptr);
+        world.generateTectonics(planet, ui.seed, ui.plateCount, ui.tectonicActivity, &ui);
+        planet.setUplift(&world.uplift);
+        world.sampleElevation(planet);
+        world.generateClimate(ui.axialTilt, ui.tempOffset, ui.rainMultiplier);
+        planet.setClimate(&world.tempSeaLevel, &world.rainfallYear);
+        world.generateRivers();
+        world.generateErosion(ui.erosion);
+        planet.setErosion(&world.erosion);
+        world.sampleElevation(planet);
+        world.generateRivers();
+        world.generateHabitability();
+        world.generateResources(ui.seed);
+        if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
+        econ.valid = false;
+        map->invalidateAll();
+        stats = planet.computeStats();
+    }
     void recalcClimate() {
         map->waitIdle();
         world.sampleElevation(planet);
@@ -426,6 +448,7 @@ int main() {
     float brushT = 0.80f, strengthT = 0.851f;
     float hardnessUi = 0.35f, roughUi = 0.45f, landHeightT = 0.35f, seaDepthT = 0.3f;
     std::vector<std::pair<double, double>> lassoPts; bool lassoing = false;
+    bool plateMode = false; int plateSel = -1, plateDrag = 0, pendingPlateRebuild = 0; Vec3d plateDragDir{0, 0, 1};
 
 #ifdef WB_SHOTS
     // Developer hook: render a few frames on a chosen tab, save a screenshot and quit (used for automated UI checks)
@@ -460,6 +483,16 @@ int main() {
                 myRouteSel = 0;
             }
         }
+    }
+    if (const char* pd = getenv("WB_PLATES")) {   // "drift plate type"
+        plateMode = true; overlayUi = atoi(getenv("WB_OVERLAY") ? getenv("WB_OVERLAY") : "1");
+        float drift = 0; int pl = -1, ty = 0;
+        sscanf(pd, "%f %d %d", &drift, &pl, &ty);
+        app.ui.driftMa = drift;
+        if (pl >= 0) { app.ui.editFor(pl)->type = ty; plateSel = pl; }
+        double t0 = GetTime();
+        app.rebuildPlates();
+        printf("PLATES rebuild %.2fs\n", GetTime() - t0);
     }
     if (const char* lz = getenv("WB_LASSO")) {   // test shapes for the brushes, around the view centre
         double cl = view.centerLat, co = view.centerLon;
@@ -572,7 +605,7 @@ int main() {
         const bool placingEvent = tab == TabHistory && eventTool == 1;
         const bool pinningLore = tab == TabLore && loreTool == 1 && loreSel >= 0;
         const bool measuring = tab == TabMap && measureTool == 1;
-        const bool anyTool = activeTool > 0 || paintingTerritory || placingCity || placingEvent || pinningLore || measuring || relPick;
+        const bool anyTool = activeTool > 0 || paintingTerritory || placingCity || placingEvent || pinningLore || measuring || relPick || (plateMode && tab == TabWorld);
         const Rectangle miniRect{(float)sw - 270, 50, 256, 128};   // below the layer chips
         const bool overMini = showMini && CheckCollisionPointRec(mouse, miniRect);
         app.applyYear();
@@ -800,6 +833,54 @@ int main() {
             double dl = std::remainder(lon - view.centerLon, 360.0);
             return Vector2{(float)(sw / 2.0 + dl * view.pxPerDeg), (float)(sh / 2.0 - (lat - view.centerLat) * view.pxPerDeg)};
         };
+
+        // ---- Moving tectonic plates (World tab, "Edit plates") ----
+        const bool platesActive = plateMode && tab == TabWorld && !app.world.plates.empty();
+        auto plateCentre = [&](int p) {
+            const Vec3d& c = app.world.plates[p].seed;
+            return std::pair<double, double>{std::asin(clampd(c.y, -1, 1)) * 180 / kPi, std::atan2(c.x, c.z) * 180 / kPi};
+        };
+        auto plateArrowTip = [&](int p) {
+            auto cl = plateCentre(p);
+            const Plate& pl = app.world.plates[p];
+            Vec3d v = pl.pole.cross(pl.seed) * pl.speed, e, n;
+            localAxes(cl.first, cl.second, e, n);
+            Vector2 a = toScreen(cl.first, cl.second);
+            return Vector2{a.x + (float)v.dot(e) * 70, a.y - (float)v.dot(n) * 70};
+        };
+        if (platesActive && !overPanel) {
+            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                plateDrag = 0;
+                for (int p = 0; p < (int)app.world.plates.size() && !plateDrag; p++) {
+                    if (p < (int)app.world.plateRemoved.size() && app.world.plateRemoved[p]) continue;
+                    Vector2 tip = plateArrowTip(p);
+                    auto cl = plateCentre(p);
+                    Vector2 c = toScreen(cl.first, cl.second);
+                    if (std::hypot(tip.x - mouse.x, tip.y - mouse.y) < 11) { plateDrag = 2; plateSel = p; }
+                    else if (std::hypot(c.x - mouse.x, c.y - mouse.y) < 12) { plateDrag = 1; plateSel = p; }
+                }
+                if (!plateDrag && hit) plateSel = app.world.plateId[World::nearestCell(mLat, mLon)];
+                plateDragDir = hitDir;
+            }
+            if (plateDrag && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && hit) plateDragDir = hitDir;
+            if (plateDrag && IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+                PlateEdit* e = app.ui.editFor(plateSel);
+                if (plateDrag == 1) { e->moveSeed = true; e->seed = plateDragDir; }
+                else {
+                    // the arrow gives the speed and direction at the plate's centre
+                    const Vec3d& c = app.world.plates[plateSel].seed;
+                    auto cl = plateCentre(plateSel);
+                    Vector2 a = toScreen(cl.first, cl.second);
+                    Vec3d ea, na; localAxes(cl.first, cl.second, ea, na);
+                    Vec3d v = ea * ((mouse.x - a.x) / 70.0) + na * (-(mouse.y - a.y) / 70.0);
+                    double sp = clampd(v.length(), 0.05, 2.0);
+                    Vec3d pole = c.cross(v);
+                    if (pole.length() > 1e-9) { e->moveMotion = true; e->pole = pole.normalized(); e->speed = sp; }
+                }
+                plateDrag = 0;
+                pendingPlateRebuild = 2;
+            }
+        }
 
         // ---- Sculpting ----
         // tools: 0 pan, 1 raise, 2 lower, 3 smooth, 4 flatten, 5 make land, 6 make sea, 7-9 stamps,
@@ -1247,6 +1328,34 @@ int main() {
             if (flowWind || ov == Overlay::Wind) { windFlow.update(app.world, mo, area, dt, toLL, 7.f, count); windFlow.draw(ink); }
             if (flowCurrents || ov == Overlay::Currents) { curFlow.update(app.world, mo, area, dt, toLL, 7.f, count / 2); curFlow.draw(ink); }
         }
+        if (plateMode && tab == TabWorld && !app.world.plates.empty()) {
+            for (int p = 0; p < (int)app.world.plates.size(); p++) {
+                if (p < (int)app.world.plateRemoved.size() && app.world.plateRemoved[p]) continue;
+                auto cl = plateCentre(p);
+                Vector2 c = toScreen(cl.first, cl.second);
+                Vector2 tip = plateArrowTip(p);
+                bool sel = p == plateSel;
+                if (plateDrag && sel) {
+                    double la = std::asin(clampd(plateDragDir.y, -1, 1)) * 180 / kPi, lo = std::atan2(plateDragDir.x, plateDragDir.z) * 180 / kPi;
+                    if (plateDrag == 1) { Vector2 to = toScreen(la, lo); DrawLineEx(c, to, 2, Fade(WHITE, 0.6f)); c = to; tip = Vector2{to.x + tip.x - c.x, to.y + tip.y - c.y}; }
+                    else tip = mouse;
+                }
+                if (c.x < panel.x + panel.width - 20 || c.x > sw + 20) continue;
+                Color pc{app.world.plates[p].r, app.world.plates[p].g, app.world.plates[p].b, 255};
+                DrawLineEx(c, tip, sel ? 5.f : 4.f, Fade(BLACK, 0.6f));
+                DrawLineEx(c, tip, sel ? 3.f : 2.f, sel ? theme::kAccentHi : WHITE);
+                float ang = std::atan2(tip.y - c.y, tip.x - c.x);
+                Vector2 l{tip.x - 12 * std::cos(ang - 0.45f), tip.y - 12 * std::sin(ang - 0.45f)}, r{tip.x - 12 * std::cos(ang + 0.45f), tip.y - 12 * std::sin(ang + 0.45f)};
+                DrawTriangle(tip, r, l, sel ? theme::kAccentHi : WHITE);
+                DrawTriangle(tip, l, r, sel ? theme::kAccentHi : WHITE);
+                DrawCircleV(c, sel ? 11.f : 9.f, BLACK);
+                DrawCircleV(c, sel ? 9.f : 7.f, pc);
+                DrawCircleLinesV(c, sel ? 11.f : 9.f, sel ? theme::kAccentHi : WHITE);
+                const char* t = TextFormat("%d", p + 1);
+                Vector2 ts = measureTextK(FontKind::UiBold, t, 12);
+                drawTextK(FontKind::UiBold, t, {c.x - ts.x / 2, c.y - ts.y / 2}, 12, BLACK);
+            }
+        }
         if (showVolcanoes && (ov == Overlay::Plates || ov == Overlay::Rock || ov == Overlay::Earthquakes || view.pxPerDeg > 12)) {
             for (const Volcano& v : app.world.volcanoes) {
                 Vector2 p = toScreen(v.lat, v.lon);
@@ -1400,6 +1509,48 @@ int main() {
             L.label(TextFormat("Tectonic activity: %.1f", activityUi)); L.slider(&activityUi, 0, 2);
             L.label(TextFormat("Erosion: %.1f", erosionUi)); L.slider(&erosionUi, 0, 2.5f);
             bool genClicked = L.primary("Generate planet");
+            L.heading("MOVE PLATES");
+            {
+                bool pm = plateMode;
+                L.check("Edit plates on the map", &pm);
+                if (pm != plateMode) { plateMode = pm; if (pm) { overlayUi = 1; } plateSel = -1; }
+                if (plateMode) {
+                    L.note("Drag a plate's dot to move it, or the tip of its arrow to change where it is heading and how fast. Plates pulling apart open rifts, plates pushing together raise mountains.");
+                    L.label(TextFormat("Drift time: %.0f million years", app.ui.driftMa));
+                    float dr = app.ui.driftMa;
+                    L.slider(&dr, 0, 200);
+                    app.ui.driftMa = std::round(dr / 5) * 5;
+                    L.note("Longer drift opens wider new oceans where plates part and higher ranges where they meet.");
+                    if (L.button("Apply drift", 30)) pendingPlateRebuild = 2;
+                    if (plateSel >= 0 && plateSel < (int)app.world.plates.size()) {
+                        Plate& pl = app.world.plates[plateSel];
+                        L.heading(TextFormat("PLATE %d", plateSel + 1));
+                        DrawRectangleRounded({L.x, L.y + 2, 18, 18}, 0.3f, 4, Color{pl.r, pl.g, pl.b, 255});
+                        drawTextK(FontKind::Ui, TextFormat("%s, moving %.1f cm/yr", pl.continental ? "Continental" : "Oceanic", pl.speed * 5), {L.x + 26, L.y + 2}, 15, theme::kText);
+                        L.y += 28;
+                        PlateEdit* pe = nullptr;
+                        for (auto& e : app.ui.plateEdits) if (e.plate == plateSel) pe = &e;
+                        int ty = pe ? pe->type : 0;
+                        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 8) / 3, 28}, "Automatic;Continental;Oceanic", &ty);
+                        L.y += 34;
+                        if (ty != (pe ? pe->type : 0)) { app.ui.editFor(plateSel)->type = ty; pendingPlateRebuild = 2; }
+                        L.note("Continental plates carry land; making a plate oceanic sinks its land, making it continental raises new land.");
+                        float sp = (float)pl.speed, sp0 = sp;
+                        L.label(TextFormat("Speed: %.1f cm/yr", sp * 5)); L.slider(&sp, 0.05f, 2.0f);
+                        if (sp != sp0) { PlateEdit* e = app.ui.editFor(plateSel); e->moveMotion = true; e->pole = pl.pole; e->speed = sp; pl.speed = sp; }
+                        if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT) && sp != sp0) pendingPlateRebuild = 2;
+                        float bw = (L.w - 8) / 2;
+                        if (GuiButton(Rectangle{L.x, L.y, bw, 28}, "Apply speed")) pendingPlateRebuild = 2;
+                        if (GuiButton(Rectangle{L.x + bw + 8, L.y, bw, 28}, "Merge away")) { app.ui.editFor(plateSel)->removed = true; plateSel = -1; pendingPlateRebuild = 2; }
+                        L.y += 36;
+                        if (pe && L.button("Reset this plate")) {
+                            app.ui.plateEdits.erase(std::remove_if(app.ui.plateEdits.begin(), app.ui.plateEdits.end(), [&](const PlateEdit& e) { return e.plate == plateSel; }), app.ui.plateEdits.end());
+                            pendingPlateRebuild = 2;
+                        }
+                    } else L.note("Click a plate to select it.");
+                    if (!app.ui.plateEdits.empty() && L.button("Reset all plates")) { app.ui.plateEdits.clear(); app.ui.driftMa = 0; pendingPlateRebuild = 2; }
+                }
+            }
             L.heading("STATS");
             L.label(TextFormat("Land: %.1f%%", app.stats.landPercent));
             L.label(TextFormat("Highest: %.0f m   Deepest: %.0f m", app.stats.highestM, app.stats.deepestM));
@@ -1410,6 +1561,7 @@ int main() {
             L.note("Press F1 any time for help and keyboard shortcuts.");
             if (randomClicked) { app.ui.seed = GetRandomValue(0, 999999); genClicked = true; }
             if (genClicked) {
+                if (app.ui.plateCount != (int)platesUi || randomClicked) app.ui.plateEdits.clear();   // edits belong to the old plates
                 app.ui.radiusKm = std::round(radiusUi); app.ui.oceanPercent = oceanUi; app.ui.mountains = mountUi;
                 app.ui.continentSize = contUi; app.ui.plateCount = (int)platesUi; app.ui.tectonicActivity = activityUi;
                 app.ui.axialTilt = tiltUi; app.ui.tempOffset = tempOffUi; app.ui.rainMultiplier = rainMulUi; app.ui.seaLevel = seaUi;
@@ -2856,6 +3008,14 @@ int main() {
             }
             if (GuiButton(Rectangle{cx + cw - 180, cy + chh - 46, 154, 32}, "Got it")) showIntro = false;
             if (!showIntro) SaveFileText("worldbuilder-intro-seen.txt", (char*)"The getting-started guide has been shown. Delete this file to see it again.\n");
+        }
+        if (pendingPlateRebuild > 0) {
+            float cx = (panel.x + panel.width + sw) / 2;
+            theme::card(Rectangle{cx - 190, (float)sh / 2 - 34, 380, 68}, theme::kAccent);
+            const char* t = "Moving plates and rebuilding the land...";
+            Vector2 ts = measureTextK(FontKind::UiBold, t, 18);
+            drawTextK(FontKind::UiBold, t, {cx - ts.x / 2, (float)sh / 2 - 10}, 18, theme::kText);
+            if (--pendingPlateRebuild == 0) { app.rebuildPlates(); app.labelsDirty = true; setStatus("Plates moved. Ctrl+Z doesn't undo this - use Reset in the World tab"); }
         }
         if (pendingExport > 0) {
             theme::card(Rectangle{(float)sw / 2 - 160, (float)sh / 2 - 30, 320, 60}, theme::kAccent);

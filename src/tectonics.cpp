@@ -88,7 +88,7 @@ const char* World::boundaryName(Boundary b) {
     }
 }
 
-void World::generateTectonics(const Planet& planet, int seed, int plateCount, double activity) {
+void World::generateTectonics(const Planet& planet, int seed, int plateCount, double activity, const PlanetSettings* edits) {
     initGrid(planet.radiusKm());
     const int N = W * H;
     uint32_t s = (uint32_t)seed * 7919u + 17u;
@@ -109,6 +109,19 @@ void World::generateTectonics(const Planet& planet, int seed, int plateCount, do
     plateId.assign(N, 0);
     std::vector<double> weight(plateCount);
     for (int i = 0; i < plateCount; i++) weight[i] = 0.75 + rnd01(s) * 0.6;   // some plates are bigger than others
+    // the user's changes: moved centres, new motion, merged plates
+    plateRemoved.assign(plateCount, 0);
+    if (edits) {
+        for (const PlateEdit& e : edits->plateEdits) {
+            if (e.plate < 0 || e.plate >= plateCount) continue;
+            Plate& p = plates[e.plate];
+            if (e.moveSeed) p.seed = e.seed.normalized();
+            if (e.moveMotion) { p.pole = e.pole.normalized(); p.speed = e.speed; }
+            if (e.removed) plateRemoved[e.plate] = 1;
+        }
+        int alive = 0; for (int p = 0; p < plateCount; p++) alive += !plateRemoved[p];
+        if (alive < 2) plateRemoved.assign(plateCount, 0);
+    }
     for (int i = 0; i < N; i++) {
         const Vec3d& d = cellDir[i];
         Vec3d q = d + Vec3d{warp(d.x * 2.5, d.y * 2.5, d.z * 2.5), warp(d.x * 2.5 + 7, d.y * 2.5, d.z * 2.5),
@@ -116,6 +129,7 @@ void World::generateTectonics(const Planet& planet, int seed, int plateCount, do
                     + Vec3d{warp(d.x * 9, d.y * 9, d.z * 9 + 3), warp(d.x * 9 + 5, d.y * 9, d.z * 9), warp(d.x * 9, d.y * 9 + 9, d.z * 9)} * 0.04;
         double best = 1e9; int bi = 0;
         for (int p = 0; p < plateCount; p++) {
+            if (plateRemoved[p]) continue;
             double a = angleBetween(q, plates[p].seed) / weight[p];
             if (a < best) { best = a; bi = p; }
         }
@@ -130,6 +144,10 @@ void World::generateTectonics(const Planet& planet, int seed, int plateCount, do
         if (planet.elevation(cellDir[i], 0) > 0) landArea[plateId[i]] += w;
     }
     for (int p = 0; p < plateCount; p++) plates[p].continental = landArea[p] > 0.25 * area[p];
+    if (edits)
+        for (const PlateEdit& e : edits->plateEdits)
+            if (e.plate >= 0 && e.plate < plateCount && e.type > 0) plates[e.plate].continental = e.type == 1;
+    const double drift = edits ? std::max(0.0, (double)edits->driftMa) : 0.0;
 
     // 3. Boundaries: compare the motion of neighbouring plates
     boundary.assign(N, (uint8_t)Boundary::None);
@@ -201,6 +219,7 @@ void World::generateTectonics(const Planet& planet, int seed, int plateCount, do
         int b = src[i];
         double d = distBoundaryKm[i];
         double str = clampd(std::fabs(conv[b]) / 1.2, 0.2, 1.0) * activity;
+        if (conv[b] > 0) str *= std::min(2.2, 1 + drift / 80.0);   // longer collisions build higher ranges
         bool selfCont = plates[plateId[i]].continental;
         bool otherCont = plates[otherPlate[b]].continental;
         double u = 0;
@@ -228,6 +247,48 @@ void World::generateTectonics(const Planet& planet, int seed, int plateCount, do
             default: break;
         }
         uplift[i] = (float)u;
+    }
+
+    // The user's plate types and drift: oceanic plates sink, continental plates rise, and
+    // plates pulling apart open new oceans between them (wider the longer they drift)
+    if (edits) {
+        Simplex3 crustN((uint32_t)seed + 902);
+        std::vector<int> forced(plateCount, 0);
+        for (const PlateEdit& e : edits->plateEdits) if (e.plate >= 0 && e.plate < plateCount) forced[e.plate] = e.type;
+        for (int i = 0; i < N; i++) {
+            const Vec3d& d = cellDir[i];
+            int p = plateId[i];
+            double e0 = planet.elevation(d, 0);
+            double n = crustN(d.x * 4, d.y * 4, d.z * 4) * 0.6 + crustN(d.x * 11, d.y * 11, d.z * 11) * 0.4;
+            double db = distBoundaryKm[i];
+            double add = 0;
+            if (forced[p] == 2 && e0 > -2600) {
+                double target = -3400 + 500 * n;
+                add = (target - e0) * (0.55 + 0.45 * smoothstepd(0, 300, db));
+            } else if (forced[p] == 1 && e0 < 250) {
+                double target = 250 + 450 * (0.5 + 0.5 * n);
+                double coast = smoothstepd(40, 260, db);   // shelf seas along the plate's edge
+                target = target * coast + (-150 + 300 * n) * (1 - coast);
+                if (target > e0) add = target - e0;
+            }
+            // new ocean where plates diverge
+            if (drift > 0 && src[i] >= 0) {
+                int b = src[i];
+                Boundary bt = (Boundary)boundary[b];
+                double div = -conv[b];
+                if ((bt == Boundary::Rift || bt == Boundary::Ridge) && div > 0.05) {
+                    double half = std::min(1400.0, div * drift * 9.0);
+                    if (db < half) {
+                        double t = db / std::max(1.0, half);
+                        double depth = -2500 - 1700 * std::sqrt(t) + 250 * n;   // young, shallow ridge in the middle
+                        double w = 1 - smoothstepd(0.82, 1.0, t);
+                        double cur = e0 + add;
+                        if (cur > depth) add += (depth - cur) * w;
+                    }
+                }
+            }
+            uplift[i] += (float)add;
+        }
     }
 
     // Soften the edges between plates a little so the sea floor doesn't look blocky

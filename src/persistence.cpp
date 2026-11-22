@@ -62,6 +62,10 @@ bool saveWorld(const std::string& path, const SaveData& d, std::string& err) {
           << "climate " << s.tempOffset << " " << s.rainMultiplier << " " << s.seaLevel << "\n"
           << "erosion " << s.erosion << "\n";
         if (!s.importPath.empty()) o << "import " << quote(s.importPath) << "\n";
+        if (s.driftMa > 0) o << "drift " << s.driftMa << "\n";
+        for (const PlateEdit& e : s.plateEdits)
+            o << "plateedit " << e.plate << " " << (e.moveSeed ? 1 : 0) << " " << e.seed.x << " " << e.seed.y << " " << e.seed.z << " "
+              << (e.moveMotion ? 1 : 0) << " " << e.pole.x << " " << e.pole.y << " " << e.pole.z << " " << e.speed << " " << e.type << " " << (e.removed ? 1 : 0) << "\n";
         o << "view " << d.viewLon << " " << d.viewLat << " " << d.viewZoom << " " << d.style << "\n";
         for (const Stroke& st : d.strokes) {
             o << "stroke " << (int)st.type << " " << st.dir.x << " " << st.dir.y << " " << st.dir.z << " " << st.radiusKm << " "
@@ -105,6 +109,13 @@ bool loadWorld(const std::string& path, SaveData& d, std::string& err) {
         else if (key == "tilt") ls >> s.axialTilt;
         else if (key == "climate") ls >> s.tempOffset >> s.rainMultiplier >> s.seaLevel;
         else if (key == "erosion") ls >> s.erosion;
+        else if (key == "drift") ls >> s.driftMa;
+        else if (key == "plateedit") {
+            PlateEdit e; int ms, mm, rm;
+            ls >> e.plate >> ms >> e.seed.x >> e.seed.y >> e.seed.z >> mm >> e.pole.x >> e.pole.y >> e.pole.z >> e.speed >> e.type >> rm;
+            e.moveSeed = ms != 0; e.moveMotion = mm != 0; e.removed = rm != 0;
+            if (ls) s.plateEdits.push_back(e);
+        }
         else if (key == "import") { size_t pos = (size_t)ls.tellg(); if (pos != std::string::npos) unquote(line, pos, s.importPath); }
         else if (key == "view") ls >> d.viewLon >> d.viewLat >> d.viewZoom >> d.style;
         else if (key == "stroke") {

@@ -10,6 +10,15 @@
 // Elevation is a pure function of direction, so it can be sampled at any resolution:
 // coarse for the whole globe, metre-scale when you zoom into a city.
 
+// A change the user made to one tectonic plate (plates are numbered as generated from the seed)
+struct PlateEdit {
+    int plate = -1;
+    bool moveSeed = false; Vec3d seed{0, 0, 1};          // dragged to a new centre
+    bool moveMotion = false; Vec3d pole{0, 1, 0}; double speed = 0.5;   // new direction and speed
+    int type = 0;                                       // 0 automatic, 1 continental, 2 oceanic
+    bool removed = false;                               // merged into its neighbours
+};
+
 struct PlanetSettings {
     int   seed = 1337;
     float radiusKm = 6371.f;
@@ -24,6 +33,13 @@ struct PlanetSettings {
     float seaLevel = 0.f;         // metres: positive floods coasts, negative exposes shelves
     float erosion = 1.f;          // how much rivers and time wear the land down
     std::string importPath;       // image used as the land shape (empty = none)
+    std::vector<PlateEdit> plateEdits;
+    float driftMa = 0.f;          // million years of plate motion: opens new oceans at rifts, raises ranges where plates meet
+    PlateEdit* editFor(int plate) {
+        for (auto& e : plateEdits) if (e.plate == plate) return &e;
+        plateEdits.push_back(PlateEdit{}); plateEdits.back().plate = plate;
+        return &plateEdits.back();
+    }
 };
 
 // Raise/Lower add or remove height; Smooth/Flatten blend towards a height; Mountains raise ridged
