@@ -6,6 +6,7 @@
 #include <cmath>
 #include <algorithm>
 #include <unordered_set>
+#include <map>
 
 namespace {
 Color relColor(RelType t) {
@@ -349,6 +350,13 @@ void WebView::frame(Document& doc, int year, Rectangle area, float dt, bool mous
 }
 
 void WebView::panel(Layout& L, Document& doc, int year, std::string& status) {
+    L.heading("VIEW");
+    {
+        int fm = familyMode ? 1 : 0;
+        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 4) / 2, 30}, "Relationship web;Family tree", &fm);
+        familyMode = fm == 1;
+        L.y += 38;
+    }
     L.heading("SHOW");
     {
         float hw = L.w / 2;
@@ -422,4 +430,71 @@ void WebView::panel(Layout& L, Document& doc, int year, std::string& status) {
     L.y += 6;
     if (L.button("Tidy up (unpin all)")) for (auto& kv : layout) kv.second.pinned = false;
     (void)year;
+}
+
+// ---- family tree: grandparents down to grandchildren, spouses side by side ----
+void WebView::familyFrame(Document& doc, int year, Rectangle area, bool mouseFree) {
+    DrawRectangleRec(area, Color{16, 19, 27, 255});
+    int root = focus.kind == EntKind::Character && hasFocus ? focus.id : -1;
+    if (root < 0 || !doc.character(root)) {
+        const char* t = "Pick someone to see their family: search on the left, or click a person twice in the web.";
+        Vector2 ts = measureTextK(FontKind::Ui, t, 17);
+        drawTextK(FontKind::Ui, t, {area.x + area.width / 2 - ts.x / 2, area.y + area.height / 2}, 17, theme::kMuted);
+        return;
+    }
+    auto parents = [&](int id) { std::vector<int> v; for (auto& l : doc.links) if (l.type == RelType::Parent && l.b.kind == EntKind::Character && l.b.id == id && l.a.kind == EntKind::Character) v.push_back(l.a.id); return v; };
+    auto children = [&](int id) { std::vector<int> v; for (auto& l : doc.links) if (l.type == RelType::Parent && l.a.kind == EntKind::Character && l.a.id == id && l.b.kind == EntKind::Character) v.push_back(l.b.id); return v; };
+    auto spouses = [&](int id) { std::vector<int> v; for (auto& l : doc.links) if (l.type == RelType::Spouse && l.a.kind == EntKind::Character && l.b.kind == EntKind::Character) { if (l.a.id == id) v.push_back(l.b.id); else if (l.b.id == id) v.push_back(l.a.id); } return v; };
+    // generations -2 .. +2
+    std::map<int, std::vector<int>> gen;
+    std::unordered_set<int> placed;
+    auto put = [&](int g, int id) { if (placed.count(id) || !doc.character(id)) return; placed.insert(id); gen[g].push_back(id); };
+    put(0, root);
+    for (int s2 : spouses(root)) put(0, s2);
+    for (int p : parents(root)) { for (int c : children(p)) put(0, c); }   // siblings
+    for (int p : parents(root)) { put(-1, p); for (int s2 : spouses(p)) put(-1, s2); for (int gp : parents(p)) put(-2, gp); }
+    for (int c : children(root)) { put(1, c); for (int s2 : spouses(c)) put(1, s2); for (int gc : children(c)) put(2, gc); }
+    for (int s2 : spouses(root)) for (int c : children(s2)) put(1, c);
+    std::unordered_map<int, Vector2> pos;
+    float rowH = std::min(160.f, area.height / 5.4f), nodeW = 110;
+    for (auto& g : gen) {
+        float y = area.y + area.height / 2 + g.first * rowH - 40;
+        int n = (int)g.second.size();
+        float gap = std::min(nodeW + 30, (area.width - 40) / std::max(1, n));
+        float x0 = area.x + area.width / 2 - gap * (n - 1) / 2;
+        for (int k = 0; k < n; k++) pos[g.second[k]] = {x0 + gap * k, y};
+    }
+    // lines: parent to child, and spouses
+    for (auto& l : doc.links) {
+        if (l.a.kind != EntKind::Character || l.b.kind != EntKind::Character) continue;
+        auto pa = pos.find(l.a.id), pb = pos.find(l.b.id);
+        if (pa == pos.end() || pb == pos.end()) continue;
+        if (l.type == RelType::Parent) {
+            Vector2 a = {pa->second.x, pa->second.y + 46}, b = {pb->second.x, pb->second.y - 46};
+            float mid = (a.y + b.y) / 2;
+            DrawLineEx(a, {a.x, mid}, 2, Color{230, 190, 90, 220}); DrawLineEx({a.x, mid}, {b.x, mid}, 2, Color{230, 190, 90, 220}); DrawLineEx({b.x, mid}, b, 2, Color{230, 190, 90, 220});
+        } else if (l.type == RelType::Spouse) {
+            DrawLineEx({pa->second.x, pa->second.y - 3}, {pb->second.x, pb->second.y - 3}, 2, Color{240, 120, 170, 220});
+            DrawLineEx({pa->second.x, pa->second.y + 3}, {pb->second.x, pb->second.y + 3}, 2, Color{240, 120, 170, 220});
+        }
+    }
+    Vector2 m = GetMousePosition();
+    for (auto& kv : pos) {
+        const Character* c = doc.character(kv.first);
+        Vector2 p = kv.second;
+        Rectangle card{p.x - nodeW / 2, p.y - 46, nodeW, 92};
+        bool hov = mouseFree && CheckCollisionPointRec(m, card);
+        theme::card(card, kv.first == root ? theme::kAccentHi : hov ? theme::kText : Color{70, 80, 104, 255});
+        drawPortrait({p.x - 22, p.y - 40, 44, 50}, *c, year);
+        std::string nm = c->name;
+        while (nm.size() > 3 && measureTextK(FontKind::UiBold, nm.c_str(), 12).x > nodeW - 8) nm = nm.substr(0, nm.size() - 4) + "..";
+        Vector2 ts = measureTextK(FontKind::UiBold, nm.c_str(), 12);
+        drawTextK(FontKind::UiBold, nm.c_str(), {p.x - ts.x / 2, p.y + 13}, 12, theme::kText);
+        std::string yrs = c->died < 99999 ? TextFormat("%d - %d", c->born, c->died) : TextFormat("born %d", c->born);
+        ts = measureTextK(FontKind::Ui, yrs.c_str(), 11);
+        drawTextK(FontKind::Ui, yrs.c_str(), {p.x - ts.x / 2, p.y + 28}, 11, theme::kMuted);
+        if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) { focus = {EntKind::Character, kv.first}; hasFocus = true; }
+    }
+    drawTextK(FontKind::Serif, ("The family of " + doc.character(root)->name).c_str(), {area.x + 20, area.y + 14}, 24, theme::kAccentHi);
+    drawTextK(FontKind::Ui, "Click anyone to see their family. Add parents, children and spouses in the Characters tab.", {area.x + 20, area.y + 44}, 14, theme::kMuted);
 }

@@ -44,6 +44,8 @@ struct WebView {
     void focusOn(EntityRef r) { focus = r; hasFocus = true; camX = camY = 0; auto it = layout.find(key(r)); if (it != layout.end()) { camX = it->second.x; camY = it->second.y; } }
     // rebuild the graph from the document, settle it a little, handle the mouse and draw it
     void frame(Document& doc, int year, Rectangle area, float dt, bool mouseFree);
+    bool familyMode = false;        // show a family tree of the focused person instead of the web
+    void familyFrame(Document& doc, int year, Rectangle area, bool mouseFree);
     void panel(Layout& L, Document& doc, int year, std::string& status);
     bool typing() const { return searchEdit; }
 private:

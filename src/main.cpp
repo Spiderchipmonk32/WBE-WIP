@@ -619,6 +619,7 @@ int main() {
         generateNotables(app.doc, app.doc.currentYear, 77);
         if (!app.doc.characters.empty()) charUi.sel = app.doc.characters[atoi(getenv("WB_CHARS"))].id;
         if (getenv("WB_WEBFOCUS")) web.focusOn({EntKind::Character, charUi.sel});
+        if (getenv("WB_FAMILY")) web.familyMode = true;
         printf("CHARS %zu links %zu\n", app.doc.characters.size(), app.doc.links.size());
     }
     if (const char* ys = getenv("WB_SIM")) {
@@ -1579,8 +1580,9 @@ int main() {
             if (y2 != app.doc.currentYear && !(app.doc.simStarted && app.doc.simSpeed > 0)) app.doc.currentYear = y2;
         }
         if (tab == TabWeb) {
-            web.frame(app.doc, year, Rectangle{panel.x + panel.width, 0, (float)sw - panel.x - panel.width, (float)sh - 30}, dt,
-                      mouse.x > panel.x + panel.width && !typing && !overHud);
+            Rectangle wa{panel.x + panel.width, 0, (float)sw - panel.x - panel.width, (float)sh - 30};
+            if (web.familyMode) web.familyFrame(app.doc, year, wa, mouse.x > panel.x + panel.width && !typing && !overHud);
+            else web.frame(app.doc, year, wa, dt, mouse.x > panel.x + panel.width && !typing && !overHud);
         }
         // ---- Layer chips ----
         if (!mapHidden) {
