@@ -1,4 +1,5 @@
 #include "world.h"
+#include <functional>
 #include <algorithm>
 #include <cmath>
 #include <queue>
@@ -113,7 +114,7 @@ void World::generateRivers() {
 
     // River lines: start at headwaters where flow first passes a threshold, follow downstream
     rivers.clear();
-    const float minQ = 60;   // m3/s
+    const float minQ = 18;   // m3/s (small streams are only drawn when zoomed in)
     std::vector<uint8_t> used(N, 0);
     std::vector<int> heads;
     for (int i = 0; i < N; i++) {
@@ -153,10 +154,11 @@ void World::generateRivers() {
         if (r.pts.size() >= 3) rivers.push_back(std::move(r));
     }
 
-    // Smooth the lines (Chaikin) and add a gentle meander so they don't follow the grid
+    // Smooth the lines (Chaikin), then meander: bends sideways to the flow, wandering more on
+    // flat lowlands than in steep mountain valleys, with bend size growing with the river
     Simplex3 meander(5151);
     for (River& r : rivers) {
-        for (int pass = 0; pass < 2; pass++) {
+        for (int pass = 0; pass < 3; pass++) {
             std::vector<Vec3d> p2; std::vector<float> q2;
             p2.push_back(r.pts.front()); q2.push_back(r.q.front());
             for (size_t k = 0; k + 1 < r.pts.size(); k++) {
@@ -167,12 +169,47 @@ void World::generateRivers() {
             p2.push_back(r.pts.back()); q2.push_back(r.q.back());
             r.pts.swap(p2); r.q.swap(q2);
         }
+        if (r.pts.size() < 4) continue;
+        std::vector<Vec3d> out = r.pts;
+        double along = 0;   // km from the source
+        const double seedOff = (r.pts.front().x * 1000.0);
         for (size_t k = 1; k + 1 < r.pts.size(); k++) {
-            Vec3d& p = r.pts[k];
-            Vec3d off{meander(p.x * 40, p.y * 40, p.z * 40), meander(p.x * 40 + 9, p.y * 40, p.z * 40), meander(p.x * 40, p.y * 40 + 17, p.z * 40)};
-            p = (p + off * (ck / radiusKm * 0.35)).normalized();
+            along += angleBetween(r.pts[k - 1], r.pts[k]) * radiusKm;
+            Vec3d t = (r.pts[k + 1] - r.pts[k - 1]);
+            if (t.length() < 1e-12) continue;
+            Vec3d side = r.pts[k].cross(t).normalized();
+            double lat = std::asin(clampd(r.pts[k].y, -1, 1)) * 180 / kPi, lon = std::atan2(r.pts[k].x, r.pts[k].z) * 180 / kPi;
+            double h = sample(elev, lat, lon);
+            double flat = 1 - smoothstepd(150, 1500, h);        // lowland rivers wander most
+            double wl = 25 + 6 * std::sqrt(std::max(1.0f, r.q[k]) / 10.0);   // bend wavelength, km
+            double m = meander(along / wl, seedOff, 0.5) * 0.7 + meander(along / (wl * 0.37), seedOff + 7.3, 1.5) * 0.3;
+            double ampKm = wl * (0.12 + 0.28 * flat);
+            // keep the very end and start in place so mouths and junctions still meet
+            double ends = std::min(1.0, std::min((double)k, (double)(r.pts.size() - 1 - k)) / 4.0);
+            out[k] = (r.pts[k] + side * (m * ampKm * ends / radiusKm)).normalized();
         }
+        r.pts.swap(out);
     }
+}
+
+void World::fitRiversToCoast(const std::function<double(const Vec3d&)>& fineElevation) {
+    // the drawn map has a finer coastline than this grid: end each river where it first reaches
+    // the sea, and drop rivers that start in water
+    std::vector<River> kept;
+    auto fine = [&](const Vec3d& d) {
+        double lat = std::asin(clampd(d.y, -1, 1)) * 180 / kPi, lon = std::atan2(d.x, d.z) * 180 / kPi;
+        double coarse = sample(elev, lat, lon);
+        return coarse > 400 ? coarse : fineElevation(d);   // only look closely near the coast
+    };
+    for (River& r : rivers) {
+        size_t cut = r.pts.size();
+        for (size_t k = 1; k < r.pts.size(); k++)
+            if (fine(r.pts[k]) < -2) { cut = k + 1; break; }
+        if (fine(r.pts.front()) < 0) continue;
+        r.pts.resize(std::min(cut, r.pts.size())); r.q.resize(r.pts.size());
+        if (r.pts.size() >= 3) kept.push_back(std::move(r));
+    }
+    rivers.swap(kept);
 }
 
 void World::generateErosion(double strength) {

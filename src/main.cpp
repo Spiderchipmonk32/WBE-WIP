@@ -262,10 +262,12 @@ struct App {
         world.generateClimate(ui.axialTilt, ui.tempOffset, ui.rainMultiplier);
         planet.setClimate(&world.tempSeaLevel, &world.rainfallYear);
         world.generateRivers();
+        fitRivers();
         world.generateErosion(ui.erosion);
         planet.setErosion(&world.erosion);
         world.sampleElevation(planet);
         world.generateRivers();   // again, on the eroded land
+        fitRivers();
         world.generateHabitability();
         std::vector<CustomResource> keepCustom = doc.customResources;   // your invented resources survive a new planet
         setCustomResources(keepCustom);
@@ -296,6 +298,7 @@ struct App {
         styleUi = d.style;
         doc = d.doc;
         doc.ensureOwner(World::W * World::H);
+        snapCitiesToLand();
         labelsDirty = true;
         econ = Economy{};
         if (!doc.customResources.empty()) {   // place the saved fantasy resources too
@@ -317,10 +320,12 @@ struct App {
         world.generateClimate(ui.axialTilt, ui.tempOffset, ui.rainMultiplier);
         planet.setClimate(&world.tempSeaLevel, &world.rainfallYear);
         world.generateRivers();
+        fitRivers();
         world.generateErosion(ui.erosion);
         planet.setErosion(&world.erosion);
         world.sampleElevation(planet);
         world.generateRivers();
+        fitRivers();
         world.generateHabitability();
         world.generateResources(ui.seed);
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
@@ -328,11 +333,53 @@ struct App {
         map->invalidateAll();
         stats = planet.computeStats();
     }
+    void fitRivers() {
+        world.fitRiversToCoast([&](const Vec3d& d) { return planet.elevation(d, 9); });
+    }
+    // Moves any city that sits in the water (on the detailed coastline) to the nearest dry land
+    // land at every zoom level (the coastline gains detail as you zoom in)
+    double minElevAllZooms(double lat, double lon) const {
+        Vec3d d = TileMap::dirFromLatLon(lat, lon);
+        double m = 1e9;
+        for (int oct : {2, 4, 6, 8, 10, 13}) m = std::min(m, planet.elevation(d, oct));
+        // and on the coarse grid, which is what the zoomed-out map shows
+        if (!world.elev.empty()) m = std::min(m, World::sample(world.elev, lat, lon));
+        // lakes count as water too (same test as the map drawing)
+        if (!world.lakeMask.empty() && World::sample(world.lakeMask, lat, lon) > 0.3) {
+            double surf = std::max(World::sample(world.lakeSurface, lat, lon), (double)world.lakeSurface[World::nearestCell(lat, lon)]);
+            m = std::min(m, planet.elevation(d, 10) - surf);
+        }
+        return m;
+    }
+    int snapCitiesToLand() {
+        int moved = 0;
+        for (City& c : doc.cities) {
+            if (minElevAllZooms(c.lat, c.lon) > 3) continue;
+            double bestD = 1e9, bl = c.lat, bo = c.lon;
+            for (int ring = 1; ring <= 24 && bestD > 1e8; ring++) {
+                double r = ring * 0.06;
+                for (int k = 0; k < 8 * ring; k++) {
+                    double a = k * 2 * kPi / (8 * ring);
+                    double la = c.lat + r * std::sin(a), lo = c.lon + r * std::cos(a) / std::max(0.2, std::cos(c.lat * kPi / 180));
+                    if (std::fabs(la) > 89) continue;
+                    if (minElevAllZooms(la, lo) > 8 && r < bestD) { bestD = r; bl = la; bo = lo; }
+                }
+            }
+            if (bestD < 1e8) {
+                // step a little further inland so the marker clearly sits on land
+                double la2 = c.lat + (bl - c.lat) * 1.25, lo2 = c.lon + std::remainder(bo - c.lon, 360.0) * 1.25;
+                if (minElevAllZooms(la2, lo2) > 8) { bl = la2; bo = lo2; }
+                c.lat = bl; c.lon = wrapLon(bo); moved++;
+            }
+        }
+        return moved;
+    }
     void recalcClimate() {
         map->waitIdle();
         world.sampleElevation(planet);
         world.generateClimate(ui.axialTilt, ui.tempOffset, ui.rainMultiplier);
         world.generateRivers();
+        fitRivers();
         world.generateHabitability();
         if (world.selectedRes >= 0) world.selectedFavor = world.favorability(world.selectedRes);
         map->invalidateAll();
@@ -461,6 +508,8 @@ int main() {
         generateCultures(app.doc, 6, (uint32_t)app.ui.seed + 5u);
         generateNations(app.doc, app.world, 40, (uint32_t)app.ui.seed + 17u);
         generateCities(app.doc, app.world, 1, (uint32_t)app.ui.seed + 29u);
+        printf("SNAP moved %d\n", app.snapCitiesToLand());
+        for (int k = 38; k < 42 && k < (int)app.doc.cities.size(); k++) { auto& c = app.doc.cities[k]; printf("city %d %s %.2f %.2f elev %.0f\n", k, c.name.c_str(), c.lat, c.lon, app.minElevAllZooms(c.lat, c.lon)); }
         generateReligions(app.doc, app.world, 5, (uint32_t)app.ui.seed + 41u);
         generateRulers(app.doc, (uint32_t)app.ui.seed + 53u);
         generateRelations(app.doc, (uint32_t)app.ui.seed + 61u);
@@ -529,7 +578,7 @@ int main() {
     if (const char* c = getenv("WB_CITY")) {
         citySel = atoi(c);
         if (getenv("WB_CITYED") && citySel < (int)app.doc.cities.size()) { map.waitIdle(); cityEd.open(citySel, app.planet, app.world, app.doc); }
-        if (citySel < (int)app.doc.cities.size()) { view.centerLat = app.doc.cities[citySel].lat; view.centerLon = app.doc.cities[citySel].lon - 15; view.pxPerDeg *= 2.5; }
+        if (citySel < (int)app.doc.cities.size()) { view.centerLat = app.doc.cities[citySel].lat; view.centerLon = app.doc.cities[citySel].lon - 15 / (getenv("WB_ZOOM") ? atof(getenv("WB_ZOOM")) : 1); view.pxPerDeg *= 2.5; }
     }
     if (getenv("WB_POPS")) {
         for (int e = 0; e < 5; e++) {
@@ -962,7 +1011,9 @@ int main() {
             map.invalidate(hitDir, brushKm * 1.3 + 60);
             app.labelsDirty = true;
         }
-        if (placingCity && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (placingCity && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && app.planet.elevation(hitDir, 10) <= 0) {
+            setStatus("Cities have to be on land - click the shore or inland");
+        } else if (placingCity && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             City c;
             c.lat = mLat; c.lon = mLon;
             c.nation = map.nationAt(mLat, mLon);
@@ -972,6 +1023,7 @@ int main() {
             c.name = makeName(st, ns, true);
             int cell = World::nearestCell(mLat, mLon);
             c.population = app.world.siteScore.empty() ? 5000 : (int)(2000 + 200000 * app.world.siteScore[cell]);
+            c.founded = app.doc.currentYear;
             app.doc.cities.push_back(c);
             citySel = (int)app.doc.cities.size() - 1;
         }
@@ -1033,7 +1085,7 @@ int main() {
         }
         if (showRivers) {
             double kmPerPxR = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
-            double thr = std::max(40.0, 2500.0 * std::pow(5.0 / view.pxPerDeg, 1.3));
+            double thr = std::max(18.0, 900.0 * std::pow(5.0 / view.pxPerDeg, 1.4));
             Color rc = map.style() == MapStyle::Fantasy ? Color{70, 95, 125, 255} : Color{45, 105, 200, 255};
             for (const World::River& r : app.world.rivers) {
                 if (r.q.back() < thr) continue;
@@ -1938,6 +1990,7 @@ int main() {
                 generateCultures(app.doc, std::max(3, (int)nationCountUi / 6), (uint32_t)app.ui.seed + 5u);
                 generateNations(app.doc, app.world, (int)nationCountUi, (uint32_t)app.ui.seed + 17u);
                 generateCities(app.doc, app.world, cityDensityUi, (uint32_t)app.ui.seed + 29u);
+                app.snapCitiesToLand();
                 generateReligions(app.doc, app.world, std::max(2, (int)nationCountUi / 7), (uint32_t)app.ui.seed + 41u);
                 generateRulers(app.doc, (uint32_t)app.ui.seed + 53u);
                 generateRelations(app.doc, (uint32_t)app.ui.seed + 61u);

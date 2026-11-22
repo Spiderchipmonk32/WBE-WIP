@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <functional>
 
 class Planet;
 struct PlanetSettings;
@@ -136,6 +137,7 @@ public:
     std::vector<float> lakeMask;       // 1 on lakes
     struct River { std::vector<Vec3d> pts; std::vector<float> q; int mouthCell; };
     std::vector<River> rivers;
+    void fitRiversToCoast(const std::function<double(const Vec3d&)>& fineElevation);
     float maxDischarge = 0;
 
     // Erosion (rivers.cpp): valleys carved by rivers, old mountains worn down. Metres, added to the terrain.
