@@ -157,17 +157,17 @@ inline void textArea(Rectangle r, std::string& text, bool& editing, int& scroll)
     if (typed) scroll = maxScroll;   // follow the cursor while typing
     if (scroll > maxScroll) scroll = maxScroll;
     if (scroll < 0) scroll = 0;
-    DrawRectangleRec(r, editing ? Color{255, 255, 250, 255} : Color{245, 245, 245, 255});
-    DrawRectangleLinesEx(r, editing ? 2.f : 1.f, editing ? Color{60, 120, 200, 255} : GRAY);
+    DrawRectangleRec(r, editing ? Color{12, 14, 19, 255} : Color{17, 20, 27, 255});
+    DrawRectangleLinesEx(r, 1.f, editing ? Color{232, 178, 84, 255} : Color{58, 67, 88, 255});
     for (int i = 0; i < visible && scroll + i < (int)lines.size(); i++)
-        uiText(lines[scroll + i].c_str(), (int)r.x + 8, (int)r.y + 6 + i * lh, fs, Color{30, 30, 30, 255});
+        uiText(lines[scroll + i].c_str(), (int)r.x + 8, (int)r.y + 6 + i * lh, fs, Color{222, 227, 235, 255});
     if (editing && ((int)(GetTime() * 2) % 2 == 0)) {
         int li = std::max(0, (int)lines.size() - 1);
         if (li - scroll >= 0 && li - scroll < visible) {
             int x = (int)r.x + 8 + (lines.empty() ? 0 : uiMeasure(lines[li].c_str(), fs));
             if (!text.empty() && text.back() == '\n') { li++; x = (int)r.x + 8; }
-            if (li - scroll < visible) DrawRectangle(x + 1, (int)r.y + 6 + (li - scroll) * lh, 2, fs, Color{30, 30, 30, 255});
+            if (li - scroll < visible) DrawRectangle(x + 1, (int)r.y + 6 + (li - scroll) * lh, 2, fs, Color{246, 202, 118, 255});
         }
     }
-    if (text.empty() && !editing) uiText("Click to write...", (int)r.x + 8, (int)r.y + 6, fs, GRAY);
+    if (text.empty() && !editing) uiText("Click to write...", (int)r.x + 8, (int)r.y + 6, fs, Color{110, 118, 135, 255});
 }

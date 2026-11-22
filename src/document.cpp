@@ -53,15 +53,48 @@ void Document::removeNation(int n) {
         keep.push_back(r);
     }
     relations.swap(keep);
+    reindexLinks(EntKind::Nation, n);
+}
+
+const char* roleName(Role r) {
+    static const char* n[] = {"Commoner", "Ruler", "Noble", "Merchant", "Criminal", "Soldier", "Priest", "Scholar", "Artisan", "Farmer", "Adventurer", "Mage"};
+    return (int)r < (int)Role::Count ? n[(int)r] : "?";
+}
+const char* kTraits[] = {"Brave", "Craven", "Ambitious", "Content", "Cunning", "Honest", "Greedy", "Generous", "Cruel", "Kind",
+                         "Wrathful", "Calm", "Pious", "Cynical", "Charming", "Shy", "Diligent", "Lazy", "Paranoid", "Trusting",
+                         "Scholarly", "Strong", "Sickly", "Lucky"};
+const int kTraitCount = 24;
+const char* relTypeName(RelType t) {
+    static const char* n[] = {"Parent of", "Spouse", "Sibling", "Lover", "Friend", "Rival", "Enemy", "Mentor of", "Employs", "Serves",
+                              "Rules", "Member of", "Ally", "Owes money to"};
+    return (int)t < (int)RelType::Count ? n[(int)t] : "?";
+}
+bool relTypeDirected(RelType t) {
+    return t == RelType::Parent || t == RelType::Mentor || t == RelType::Employs || t == RelType::Serves || t == RelType::Rules ||
+           t == RelType::MemberOf || t == RelType::Owes;
 }
 
 // ---- saving ----
 void writeDocument(std::ostream& o, const Document& doc) {
+    o << "nextchar " << doc.nextCharId << "\n";
+    for (const Character& c : doc.characters) {
+        o << "char " << c.id << " " << c.sex << " " << c.born << " " << c.died << " " << (int)c.role << " " << c.culture << " " << c.nation << " "
+          << c.religion << " " << c.city << " " << c.wealth << " " << c.renown << " " << c.health << " " << (c.followed ? 1 : 0) << " "
+          << (c.userMade ? 1 : 0) << " " << c.look << " " << c.travelTo << " " << c.travelT << " " << quote(c.name) << " " << quote(c.title) << " "
+          << quote(c.house) << " " << quote(c.occupation) << " " << quote(c.appearance) << " " << quote(c.notes) << "\n";
+        if (!c.traits.empty()) { o << "chartraits " << c.id; for (int t : c.traits) o << " " << t; o << "\n"; }
+        for (const LifeEvent& e : c.log) o << "charlog " << c.id << " " << e.year << " " << e.month << " " << quote(e.text) << "\n";
+    }
+    for (const Link& l : doc.links)
+        o << "link " << (int)l.a.kind << " " << l.a.id << " " << (int)l.b.kind << " " << l.b.id << " " << (int)l.type << " " << l.strength << " "
+          << l.since << " " << quote(l.notes) << "\n";
     for (const Culture& c : doc.cultures)
         o << "culture " << quote(c.name) << " " << (int)c.style << " " << (int)c.r << " " << (int)c.g << " " << (int)c.b << " " << quote(c.notes) << "\n";
     for (const Nation& n : doc.nations)
         o << "nation " << quote(n.name) << " " << (int)n.r << " " << (int)n.g << " " << (int)n.b << " " << n.culture << " " << n.government << " "
           << quote(n.notes) << "\n";
+    for (size_t n = 0; n < doc.nations.size(); n++)
+        o << "nationstate " << n << " " << doc.nations[n].founded << " " << doc.nations[n].fell << " " << doc.nations[n].stability << " " << doc.nations[n].treasury << "\n";
     for (size_t n = 0; n < doc.nations.size(); n++)
         for (const Ruler& r : doc.nations[n].rulers) o << "ruler " << n << " " << r.start << " " << r.end << " " << quote(r.name) << "\n";
     for (const Religion& r : doc.religions)
@@ -141,6 +174,45 @@ void writeDocument(std::ostream& o, const Document& doc) {
 }
 
 bool readDocumentLine(const std::string& key, std::istringstream& in, const std::string& line, Document& doc) {
+    if (key == "nextchar") { in >> doc.nextCharId; return true; }
+    if (key == "char") {
+        Character c; int role, fol, um;
+        in >> c.id >> c.sex >> c.born >> c.died >> role >> c.culture >> c.nation >> c.religion >> c.city >> c.wealth >> c.renown >> c.health >> fol >> um
+           >> c.look >> c.travelTo >> c.travelT;
+        if (!in) return true;
+        c.role = (Role)std::min(role, (int)Role::Count - 1); c.followed = fol != 0; c.userMade = um != 0;
+        size_t pos = (size_t)in.tellg();
+        if (pos == std::string::npos) return true;
+        unquote(line, pos, c.name); unquote(line, pos, c.title); unquote(line, pos, c.house);
+        unquote(line, pos, c.occupation); unquote(line, pos, c.appearance); unquote(line, pos, c.notes);
+        doc.characters.push_back(c);
+        doc.nextCharId = std::max(doc.nextCharId, c.id + 1);
+        return true;
+    }
+    if (key == "chartraits") { int id, t; in >> id; Character* c = doc.character(id); while (c && in >> t) c->traits.push_back(t); return true; }
+    if (key == "charlog") {
+        int id; LifeEvent e; in >> id >> e.year >> e.month;
+        Character* c = doc.character(id);
+        size_t pos = (size_t)in.tellg();
+        if (c && pos != std::string::npos && unquote(line, pos, e.text)) c->log.push_back(e);
+        return true;
+    }
+    if (key == "link") {
+        Link l; int ak, bk, t;
+        in >> ak >> l.a.id >> bk >> l.b.id >> t >> l.strength >> l.since;
+        if (!in) return true;
+        l.a.kind = (EntKind)ak; l.b.kind = (EntKind)bk; l.type = (RelType)std::min(t, (int)RelType::Count - 1);
+        size_t pos = (size_t)in.tellg();
+        if (pos != std::string::npos) unquote(line, pos, l.notes);
+        doc.links.push_back(l);
+        return true;
+    }
+    if (key == "nationstate") {
+        int n; float st, tr; int fo, fe;
+        in >> n >> fo >> fe >> st >> tr;
+        if (in && n >= 0 && n < (int)doc.nations.size()) { auto& N = doc.nations[n]; N.founded = fo; N.fell = fe; N.stability = st; N.treasury = tr; }
+        return true;
+    }
     auto rest = [&](size_t& pos) { pos = (size_t)in.tellg(); if (pos == std::string::npos) pos = line.size(); };
     if (key == "culture") {
         Culture c; size_t pos; rest(pos);

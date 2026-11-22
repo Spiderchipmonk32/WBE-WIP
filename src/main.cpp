@@ -8,6 +8,8 @@
 #include "ui.h"
 #include "theme.h"
 #include "flow.h"
+#include "charpanel.h"
+#include "characters.h"
 #include "persistence.h"
 #include "politics.h"
 #include "trade.h"
@@ -117,7 +119,7 @@ void localAxes(double lat, double lon, Vec3d& east, Vec3d& north) {
 
 } // namespace
 
-enum Tab { TabWorld, TabMap, TabSculpt, TabResources, TabClimate, TabNations, TabCities, TabTrade, TabHistory, TabLore, TabFile, TabPeoples };
+enum Tab { TabWorld, TabMap, TabSculpt, TabResources, TabClimate, TabNations, TabCities, TabTrade, TabHistory, TabLore, TabFile, TabPeoples, TabCharacters, TabWeb };
 
 // Load an image file as a 0..1 greyscale grid (for the land shape)
 static bool loadImportImage(const std::string& path, std::vector<float>& out, int& w, int& h) {
@@ -452,6 +454,7 @@ int main() {
     int lastNationSel = -2, lastCitySel = -2;
     bool showRoutes = true, showEvents = true, showPins = true, typing = false;
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
+    CharUI charUi;
     bool flowWind = false, flowCurrents = false;
     FlowLayer windFlow, curFlow; curFlow.currents = true; curFlow.rng = 999;
     bool showIntro = !FileExists("worldbuilder-intro-seen.txt");
@@ -574,6 +577,11 @@ int main() {
         map.invalidateAll();
         if (getenv("WB_CLIMATE")) app.recalcClimate();
         printf("LASSO strokes=%zu elev centre=%.0f\n", app.planet.strokes().size(), app.planet.elevation(TileMap::dirFromLatLon(cl, co), 6));
+    }
+    if (getenv("WB_CHARS")) {
+        generateNotables(app.doc, app.doc.currentYear, 77);
+        if (!app.doc.characters.empty()) charUi.sel = app.doc.characters[atoi(getenv("WB_CHARS"))].id;
+        printf("CHARS %zu links %zu\n", app.doc.characters.size(), app.doc.links.size());
     }
     if (const char* c = getenv("WB_CITY")) {
         citySel = atoi(c);
@@ -834,6 +842,16 @@ int main() {
                     routeConsumed = true;
                 }
             }
+        }
+        if (tab == TabCharacters && charUi.pickingHome && !overPanel && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            routeConsumed = true;
+            if (hoverCity >= 0) {
+                if (Character* ch = app.doc.character(charUi.sel)) {
+                    ch->city = hoverCity; ch->nation = app.doc.cities[hoverCity].nation;
+                    setStatus(ch->name + " now lives in " + app.doc.cities[hoverCity].name);
+                }
+                charUi.pickingHome = false;
+            } else setStatus("Click a city");
         }
         if (routeConsumed) {
             clickedCity = true;
@@ -2631,6 +2649,15 @@ int main() {
             } else {
                 L.note("Write articles about places, people, factions, religions, creatures and items. Pin them to the map, and link them with [[Title]].");
             }
+        } else if (tab == TabCharacters) {
+            std::string msg;
+            charactersPanel(charUi, L, app.doc, year, (uint32_t)app.ui.seed, msg);
+            if (!msg.empty()) setStatus(msg);
+            if (charUi.goToCity) {
+                charUi.goToCity = false;
+                if (const Character* ch = app.doc.character(charUi.sel))
+                    if (ch->city >= 0 && ch->city < (int)app.doc.cities.size()) { view.centerLat = app.doc.cities[ch->city].lat; view.centerLon = app.doc.cities[ch->city].lon; view.pxPerDeg = std::max(view.pxPerDeg, 30.0); }
+            }
         } else if (tab == 2) {
             // tool buttons in groups, with the active one highlighted
             auto toolRow = [&](const char* const* names, const int* ids, int n) {
@@ -3109,7 +3136,7 @@ int main() {
         if (++shotFrames == (getenv("WB_FRAMES") ? atoi(getenv("WB_FRAMES")) : 30)) { TakeScreenshot(getenv("WB_SHOT") ? getenv("WB_SHOT") : "shot.png"); break; }
 #endif
         typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
-                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
+                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || charUi.typing() || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
 
         // ---- Exports (after the frame, so the message above is visible while it works) ----
         static int exportFrames = 0;

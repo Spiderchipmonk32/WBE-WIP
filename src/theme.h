@@ -144,6 +144,17 @@ inline void icon(int tab, Vector2 c, float s, Color col) {
         DrawRectangleV({c.x - s * 0.22f, c.y - s * 0.4f}, {s * 0.4f, s * 0.26f}, col);
         DrawRectangleLinesEx({c.x - s * 0.25f, c.y + s * 0.05f, s * 0.5f, s * 0.3f}, t, col);
         break;
+    case 12:  // Characters: a bust with a star
+        DrawCircleV({c.x, c.y - s * 0.16f}, s * 0.17f, col);
+        DrawCircleSector({c.x, c.y + s * 0.42f}, s * 0.33f, 180, 360, 20, col);
+        DrawPoly({c.x + s * 0.33f, c.y - s * 0.3f}, 5, s * 0.12f, 0, col);
+        break;
+    case 13: {  // Web: linked nodes
+        Vector2 p[4] = {{c.x - s * 0.3f, c.y - s * 0.25f}, {c.x + s * 0.32f, c.y - s * 0.3f}, {c.x + s * 0.05f, c.y + s * 0.32f}, {c.x - s * 0.36f, c.y + s * 0.25f}};
+        DrawLineEx(p[0], p[1], t * 0.8f, col); DrawLineEx(p[1], p[2], t * 0.8f, col); DrawLineEx(p[0], p[2], t * 0.8f, col); DrawLineEx(p[2], p[3], t * 0.8f, col);
+        for (auto& q : p) DrawCircleV(q, s * 0.1f, col);
+        break;
+    }
     case 11:  // Peoples: two figures
         DrawCircleV({c.x - s * 0.17f, c.y - s * 0.2f}, s * 0.13f, col);
         DrawCircleV({c.x + s * 0.2f, c.y - s * 0.14f}, s * 0.11f, col);
@@ -154,7 +165,7 @@ inline void icon(int tab, Vector2 c, float s, Color col) {
 }
 
 inline const char* tabName(int t) {
-    static const char* n[] = {"World", "Map", "Sculpt", "Resources", "Climate", "Nations", "Cities", "Trade", "History", "Lore", "File", "Peoples"};
+    static const char* n[] = {"World", "Map", "Sculpt", "Resources", "Climate", "Nations", "Cities", "Trade", "History", "Lore", "File", "Peoples", "Characters", "Web"};
     return n[t];
 }
 inline const char* tabBlurb(int t) {
@@ -170,12 +181,14 @@ inline const char* tabBlurb(int t) {
         "Timeline events that reshape the map.",
         "Your world's wiki: articles and pins.",
         "Save, load and export.",
-        "Cultures, languages and religions."};
+        "Cultures, languages and religions.",
+        "Create people, their families and stories.",
+        "Who is tied to whom: nations to people."};
     return n[t];
 }
 
 // Order of the tabs down the rail (grouped: shape the world, then people, then records)
-inline const int kRailOrder[] = {0, 2, 1, 4, 3, -1, 11, 5, 6, 7, -1, 8, 9, 10};
+inline const int kRailOrder[] = {0, 2, 1, 4, 3, -1, 11, 5, 6, 7, -1, 12, 13, 8, 9, 10};
 
 // Draws the rail; returns the tab clicked (or -1)
 inline int rail(Rectangle r, int active) {
@@ -184,7 +197,7 @@ inline int rail(Rectangle r, int active) {
     Vector2 m = GetMousePosition();
     int clicked = -1;
     float y = r.y + 10;
-    float itemH = std::min(56.f, (r.height - 30) / 13.f);
+    float itemH = std::min(54.f, (r.height - 40) / 15.6f);
     for (int t : kRailOrder) {
         if (t < 0) { DrawLineEx({r.x + 14, y + 4}, {r.x + r.width - 14, y + 4}, 1, Color{40, 46, 60, 255}); y += 9; continue; }
         Rectangle it{r.x + 4, y, r.width - 8, itemH};

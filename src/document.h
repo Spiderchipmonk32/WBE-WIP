@@ -32,6 +32,9 @@ struct Religion {
 
 struct Nation {
     std::vector<Ruler> rulers;
+    int founded = -99999;  // year (for the living world; -99999 = since before records)
+    int fell = 99999;      // year it fell (99999 = still standing)
+    float stability = 0.7f, treasury = 1000.f;   // living-world state
     std::string name;
     unsigned char r = 200, g = 120, b = 120;
     int culture = 0;
@@ -97,6 +100,49 @@ const char* relationName(Relation r);
 struct NationRelation { int a = 0, b = 0; Relation type = Relation::Alliance; };
 struct Bookmark { std::string name; double lat = 0, lon = 0, zoom = 5; };
 
+// ---- Characters and the relationship web ----
+enum class Role : uint8_t { Commoner, Ruler, Noble, Merchant, Criminal, Soldier, Priest, Scholar, Artisan, Farmer, Adventurer, Mage, Count };
+const char* roleName(Role r);
+extern const char* kTraits[];
+extern const int kTraitCount;
+
+struct LifeEvent { int year = 0, month = 0; std::string text; };
+
+struct Character {
+    int id = 0;                 // stable id (links refer to it)
+    std::string name, title, house, occupation, appearance, notes;
+    int sex = 0;                // 0 man, 1 woman, 2 other
+    int born = 0, died = 99999;
+    Role role = Role::Commoner;
+    int culture = -1, nation = -1, religion = -1, city = -1;
+    std::vector<int> traits;    // indices into kTraits
+    double wealth = 100, renown = 0, health = 1;   // coins, fame 0..100, 0..1
+    bool followed = false, userMade = true;
+    uint32_t look = 1;          // portrait seed
+    std::vector<LifeEvent> log;
+    // where they are now (merchants travel between cities)
+    int travelTo = -1; float travelT = 0;
+    bool hasTrait(int t) const { return std::find(traits.begin(), traits.end(), t) != traits.end(); }
+    bool alive(int year) const { return year >= born && year < died; }
+};
+
+enum class EntKind : uint8_t { Character, Nation, City, Religion, Culture };
+struct EntityRef {
+    EntKind kind = EntKind::Character; int id = -1;   // character id, or index for the others
+    bool operator==(const EntityRef& o) const { return kind == o.kind && id == o.id; }
+};
+// Parent, Mentor, Employs, Serves, Rules and MemberOf read "A is ... of/to B"; the rest go both ways
+enum class RelType : uint8_t { Parent, Spouse, Sibling, Lover, Friend, Rival, Enemy, Mentor, Employs, Serves, Rules, MemberOf, Ally, Owes, Count };
+const char* relTypeName(RelType t);
+bool relTypeDirected(RelType t);
+struct Link {
+    EntityRef a, b;
+    RelType type = RelType::Friend;
+    int strength = 3;           // 1..5
+    int since = 0;
+    std::string notes;
+};
+
 // A trade route the user drew or edited. It runs from one city to another through optional
 // waypoints; between points it either finds the best way over the terrain or goes straight.
 struct CustomRoute {
@@ -133,6 +179,35 @@ struct Document {
     }
     CityPlan* planFor(int city) { for (auto& p : plans) if (p.city == city) return &p; return nullptr; }
     std::vector<CustomRoute> customRoutes;
+    std::vector<Character> characters;
+    std::vector<Link> links;
+    int nextCharId = 1;
+    Character* character(int id) { for (auto& c : characters) if (c.id == id) return &c; return nullptr; }
+    const Character* character(int id) const { for (auto& c : characters) if (c.id == id) return &c; return nullptr; }
+    int addCharacter(Character c) { c.id = nextCharId++; characters.push_back(c); return c.id; }
+    void removeCharacter(int id) {
+        characters.erase(std::remove_if(characters.begin(), characters.end(), [&](const Character& c) { return c.id == id; }), characters.end());
+        links.erase(std::remove_if(links.begin(), links.end(), [&](const Link& l) {
+            return (l.a.kind == EntKind::Character && l.a.id == id) || (l.b.kind == EntKind::Character && l.b.id == id); }), links.end());
+    }
+    void addLink(EntityRef a, EntityRef b, RelType t, int since, int strength = 3) {
+        for (auto& l : links) if (l.type == t && ((l.a == a && l.b == b) || (!relTypeDirected(t) && l.a == b && l.b == a))) return;
+        Link l; l.a = a; l.b = b; l.type = t; l.since = since; l.strength = strength;
+        links.push_back(l);
+    }
+    // keeps links and characters pointing at the right nation/city after one is removed
+    void reindexLinks(EntKind kind, int removed) {
+        links.erase(std::remove_if(links.begin(), links.end(), [&](const Link& l) {
+            return (l.a.kind == kind && l.a.id == removed) || (l.b.kind == kind && l.b.id == removed); }), links.end());
+        for (auto& l : links) {
+            if (l.a.kind == kind && l.a.id > removed) l.a.id--;
+            if (l.b.kind == kind && l.b.id > removed) l.b.id--;
+        }
+        for (auto& c : characters) {
+            int* f = kind == EntKind::Nation ? &c.nation : kind == EntKind::City ? &c.city : kind == EntKind::Religion ? &c.religion : &c.culture;
+            if (*f == removed) *f = -1; else if (*f > removed) (*f)--;
+        }
+    }
     std::vector<std::pair<int, int>> hiddenRoutes;   // simulated routes (city pairs) the user removed
 
     void ensureOwner(int cells) {
@@ -162,6 +237,7 @@ struct Document {
             kh.push_back({r.first > c ? r.first - 1 : r.first, r.second > c ? r.second - 1 : r.second});
         }
         hiddenRoutes.swap(kh);
+        reindexLinks(EntKind::City, c);
         std::vector<CityPlan> kp;
         for (auto& p : plans) { if (p.city == c) continue; if (p.city > c) p.city--; kp.push_back(p); }
         plans.swap(kp);

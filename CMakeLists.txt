@@ -46,6 +46,8 @@ add_executable(Worldbuilder
   src/history.cpp
   src/cityeditor.cpp
     src/fonts.cpp
+    src/characters.cpp
+    src/charpanel.cpp
     src/fonts_data.cpp
   src/raygui_impl.c)
 target_include_directories(Worldbuilder PRIVATE src ${raygui_SOURCE_DIR}/src)
