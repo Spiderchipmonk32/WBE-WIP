@@ -9,6 +9,7 @@
 #include "theme.h"
 #include "flow.h"
 #include "charpanel.h"
+#include "webview.h"
 #include "characters.h"
 #include "persistence.h"
 #include "politics.h"
@@ -455,6 +456,7 @@ int main() {
     bool showRoutes = true, showEvents = true, showPins = true, typing = false;
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
     CharUI charUi;
+    WebView web;
     bool flowWind = false, flowCurrents = false;
     FlowLayer windFlow, curFlow; curFlow.currents = true; curFlow.rng = 999;
     bool showIntro = !FileExists("worldbuilder-intro-seen.txt");
@@ -581,6 +583,7 @@ int main() {
     if (getenv("WB_CHARS")) {
         generateNotables(app.doc, app.doc.currentYear, 77);
         if (!app.doc.characters.empty()) charUi.sel = app.doc.characters[atoi(getenv("WB_CHARS"))].id;
+        if (getenv("WB_WEBFOCUS")) web.focusOn({EntKind::Character, charUi.sel});
         printf("CHARS %zu links %zu\n", app.doc.characters.size(), app.doc.links.size());
     }
     if (const char* c = getenv("WB_CITY")) {
@@ -657,7 +660,7 @@ int main() {
             chipBar.width = x - chipBar.x + 150;   // room for the month stepper
         }
         const bool overChips = CheckCollisionPointRec(mouse, chipBar);
-        const bool overPanel = mouse.x < panel.x + panel.width || overChips;
+        const bool overPanel = mouse.x < panel.x + panel.width || overChips || tab == TabWeb;   // the web takes over the map area
         const double minZoom = sh / 180.0, maxZoom = TileMap::TILE / 90.0 * (1 << TileMap::MAX_LEVEL) * 2;
         const bool sculptTab = (tab == TabSculpt);
         const int activeTool = sculptTab ? tool : 0;
@@ -1483,8 +1486,12 @@ int main() {
             if (std::fabs(prev.x - first.x) < sw / 2) DrawLineEx(prev, first, 1.5f, Fade(lc, 0.6f));   // closing edge
         }
 
+        if (tab == TabWeb) {
+            web.frame(app.doc, year, Rectangle{panel.x + panel.width, 0, (float)sw - panel.x - panel.width, (float)sh - 30}, dt,
+                      mouse.x > panel.x + panel.width && !typing);
+        }
         // ---- Layer chips ----
-        {
+        if (tab != TabWeb) {
             for (int i = 0; i < chipCount; i++) {
                 Rectangle r = chipRects[i];
                 bool on = overlayUi == kChips[i].overlay, hov = CheckCollisionPointRec(mouse, r);
@@ -1536,7 +1543,7 @@ int main() {
         static float panelScroll[16] = {0};
         static float panelContentH[16] = {0};
         float& pScroll = panelScroll[tab];
-        if (overPanel && mouse.x > panel.x && !typing) {
+        if (CheckCollisionPointRec(mouse, panel) && !typing) {
             float wv = GetMouseWheelMove();
             if (wv != 0) pScroll -= wv * 60;
         }
@@ -2649,10 +2656,23 @@ int main() {
             } else {
                 L.note("Write articles about places, people, factions, religions, creatures and items. Pin them to the map, and link them with [[Title]].");
             }
+        } else if (tab == TabWeb) {
+            std::string msg;
+            web.panel(L, app.doc, year, msg);
+            if (!msg.empty()) setStatus(msg);
+            if (web.openTab >= 0) {
+                web.openTab = -1;
+                EntityRef r = web.openRef;
+                if (r.kind == EntKind::Character) { tab = TabCharacters; charUi.sel = r.id; }
+                else if (r.kind == EntKind::Nation) { tab = TabNations; nationSel = r.id; }
+                else if (r.kind == EntKind::City) { tab = TabCities; citySel = r.id; }
+                else tab = TabPeoples;
+            }
         } else if (tab == TabCharacters) {
             std::string msg;
             charactersPanel(charUi, L, app.doc, year, (uint32_t)app.ui.seed, msg);
             if (!msg.empty()) setStatus(msg);
+            if (charUi.openWeb) { charUi.openWeb = false; tab = TabWeb; web.focusOn({EntKind::Character, charUi.sel}); web.selNode = -1; }
             if (charUi.goToCity) {
                 charUi.goToCity = false;
                 if (const Character* ch = app.doc.character(charUi.sel))
@@ -2769,8 +2789,8 @@ int main() {
                 uiText(t2.c_str(), (int)p.x + 22, (int)p.y - 26, 16, theme::kText);
             }
         }
-        if (showCompass) drawCompass({panel.x + panel.width + 70, (float)sh - 150}, 42, map.style() == MapStyle::Fantasy);
-        if (showTitle) {
+        if (showCompass && tab != TabWeb) drawCompass({panel.x + panel.width + 70, (float)sh - 150}, 42, map.style() == MapStyle::Fantasy);
+        if (showTitle && tab != TabWeb) {
             std::string t = nameBuf;
             for (char& ch : t) ch = (char)std::toupper((unsigned char)ch);
             float fsz = 44, spacing = 8;
@@ -2784,7 +2804,7 @@ int main() {
             DrawRectangleLinesEx({box.x + 5, box.y + 5, box.width - 10, box.height - 10}, 1, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
             DrawTextEx(tf, t.c_str(), {cx - ts.x / 2, 24}, fsz, spacing, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
         }
-        if (showMini && globeMini) {
+        if (showMini && globeMini && tab != TabWeb) {
             // orthographic globe centred on the view, redrawn on the CPU when the view moves
             if (std::fabs(globeLat - view.centerLat) > 0.3 || std::fabs(std::remainder(globeLon - view.centerLon, 360.0)) > 0.3 || GetTime() - globeTime > 2) {
                 globeLat = view.centerLat; globeLon = view.centerLon; globeTime = GetTime();
@@ -2815,7 +2835,7 @@ int main() {
             DrawTexturePro(globeTex, Rectangle{0, 0, 200, 200}, gr, Vector2{0, 0}, 0, WHITE);
             float vr = (float)std::min(gs / 2.0, (sh / view.pxPerDeg) / 180.0 * gs / 2);
             DrawCircleLines((int)(gr.x + gs / 2), (int)(gr.y + gs / 2), std::max(3.f, vr), YELLOW);
-        } else if (showMini) {
+        } else if (showMini && tab != TabWeb) {
             theme::card(Rectangle{miniRect.x - 4, miniRect.y - 4, miniRect.width + 8, miniRect.height + 8});
             map.drawMini(miniRect);
             float vw = (float)(sw / view.pxPerDeg / 360 * miniRect.width), vh = (float)(sh / view.pxPerDeg / 180 * miniRect.height);
@@ -2953,7 +2973,7 @@ int main() {
             theme::card(Rectangle{(float)bx, (float)by, (float)(tw + 20), (float)(4 * 22 + 12)});
             for (int i = 0; i < 4; i++) uiText(t[i].c_str(), bx + 10, by + 6 + i * 22, 18, i == 0 ? theme::kAccentHi : theme::kText);
         }
-        drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
+        if (tab != TabWeb) drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
         if (!droppedPath.empty()) {
             Rectangle box{(float)sw / 2 - 300, (float)sh / 2 - 110, 600, 220};
             DrawRectangle(0, 0, sw, sh, Fade(BLACK, 0.45f));
@@ -3124,6 +3144,7 @@ int main() {
             else if (pinningLore) hint = "Click the map to pin this article";
             else if (measuring) hint = "Click to add measuring points   \xE2\x80\xA2   Right-click to clear";
             else if (relPick) hint = "Click another nation to set the relation";
+            else if (tab == TabWeb) hint = "Click to select, click again to centre   \xE2\x80\xA2   Drag to arrange   \xE2\x80\xA2   Shift-drag to link   \xE2\x80\xA2   Right-drag to move, scroll to zoom";
             else if (tab == TabTrade) hint = "Click a city to start a route   \xE2\x80\xA2   Click a route to edit it   \xE2\x80\xA2   Right-drag to move";
             char right[200] = "";
             double kmPx = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
@@ -3136,7 +3157,7 @@ int main() {
         if (++shotFrames == (getenv("WB_FRAMES") ? atoi(getenv("WB_FRAMES")) : 30)) { TakeScreenshot(getenv("WB_SHOT") ? getenv("WB_SHOT") : "shot.png"); break; }
 #endif
         typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
-                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || charUi.typing() || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
+                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || charUi.typing() || web.typing() || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
 
         // ---- Exports (after the frame, so the message above is visible while it works) ----
         static int exportFrames = 0;
