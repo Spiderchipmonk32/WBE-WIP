@@ -77,6 +77,9 @@ bool relTypeDirected(RelType t) {
 // ---- saving ----
 void writeDocument(std::ostream& o, const Document& doc) {
     o << "nextchar " << doc.nextCharId << "\n";
+    o << "sim " << doc.simYear << " " << doc.simMonth << " " << doc.simDay << " " << (doc.simStarted ? 1 : 0) << " " << doc.simSpeed << " "
+      << doc.simBase << " " << (doc.simCatchUp ? 1 : 0) << " " << doc.simWallClock << " " << doc.daysPerMonth << "\n";
+    for (auto& m : doc.monthNames) o << "month " << quote(m) << "\n";
     for (const Character& c : doc.characters) {
         o << "char " << c.id << " " << c.sex << " " << c.born << " " << c.died << " " << (int)c.role << " " << c.culture << " " << c.nation << " "
           << c.religion << " " << c.city << " " << c.wealth << " " << c.renown << " " << c.health << " " << (c.followed ? 1 : 0) << " "
@@ -175,6 +178,14 @@ void writeDocument(std::ostream& o, const Document& doc) {
 
 bool readDocumentLine(const std::string& key, std::istringstream& in, const std::string& line, Document& doc) {
     if (key == "nextchar") { in >> doc.nextCharId; return true; }
+    if (key == "sim") {
+        int st, cu;
+        in >> doc.simYear >> doc.simMonth >> doc.simDay >> st >> doc.simSpeed >> doc.simBase >> cu >> doc.simWallClock >> doc.daysPerMonth;
+        doc.simStarted = st != 0; doc.simCatchUp = cu != 0;
+        doc.daysPerMonth = std::max(1, std::min(60, doc.daysPerMonth));
+        return true;
+    }
+    if (key == "month") { std::string m; size_t pos = (size_t)in.tellg(); if (pos != std::string::npos && unquote(line, pos, m)) doc.monthNames.push_back(m); return true; }
     if (key == "char") {
         Character c; int role, fol, um;
         in >> c.id >> c.sex >> c.born >> c.died >> role >> c.culture >> c.nation >> c.religion >> c.city >> c.wealth >> c.renown >> c.health >> fol >> um

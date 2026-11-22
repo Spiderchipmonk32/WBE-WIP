@@ -10,6 +10,8 @@
 #include "flow.h"
 #include "charpanel.h"
 #include "webview.h"
+#include "sim.h"
+#include <ctime>
 #include "characters.h"
 #include "persistence.h"
 #include "politics.h"
@@ -28,6 +30,7 @@
 #include <cmath>
 #include <algorithm>
 #include <map>
+#include <unordered_map>
 #include <string>
 
 namespace {
@@ -286,11 +289,14 @@ struct App {
         map->reset();
         stats = planet.computeStats();
     }
+    Simulation sim;
+    std::string catchUpNote;
     SaveData makeSave() const {
         SaveData d;
         d.settings = ui; d.strokes = planet.strokes();
         d.viewLon = view.centerLon; d.viewLat = view.centerLat; d.viewZoom = view.pxPerDeg; d.style = styleUi;
         d.doc = doc;
+        d.doc.simWallClock = (long long)time(nullptr);   // so time can catch up when the world is opened again
         return d;
     }
     void applySave(const SaveData& d) {
@@ -310,6 +316,19 @@ struct App {
             world.generateResources(ui.seed);
         }
         appliedYear = INT_MIN; lastEventStrokes.clear();
+        // the living world kept going while the app was closed
+        catchUpNote.clear();
+        if (doc.simStarted && doc.simCatchUp && doc.simSpeed > 0 && doc.simWallClock > 0) {
+            double secs = (double)((long long)time(nullptr) - doc.simWallClock);
+            double days = secs * simDaysPerSecond(doc.simBase, doc.simSpeed);
+            if (days >= 1) {
+                int y0 = doc.simYear;
+                days = std::min(days, 200.0 * 12 * doc.daysPerMonth);
+                for (double left = days; left > 0; left -= 720) sim.advanceDays(doc, world, std::min(left, 720.0));
+                catchUpNote = TextFormat("While you were away %.0f days passed (now year %d, was %d).", days, doc.simYear, y0);
+                labelsDirty = true;
+            }
+        }
     }
     // After sculpting or changing the tilt: re-run the climate on the new terrain
     // Re-run the plates (after the user moved them) keeping sculpting, nations, cities and lore
@@ -413,7 +432,17 @@ int main() {
     app.map = &map;
     map.setWorld(&app.world);
     map.setDocument(&app.doc);
-    app.regenerate();
+    {
+        // carry on with the last world (and let its clock catch up), or start a new one
+        SaveData last; std::string err;
+        std::string auto_ = worldsFolder() + "/autosave.world";
+        bool tryLast = !FileExists("worldbuilder-start-fresh.txt");
+#ifdef WB_SHOTS
+        tryLast = getenv("WB_LOADLAST") != nullptr;
+#endif
+        if (tryLast && FileExists(auto_.c_str()) && loadWorld(auto_, last, err)) app.applySave(last);
+        else app.regenerate();
+    }
 
     MapView& view = app.view;
     view.pxPerDeg = GetScreenHeight() / 180.0 * 1.1;
@@ -456,6 +485,8 @@ int main() {
     bool showRoutes = true, showEvents = true, showPins = true, typing = false;
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
     CharUI charUi;
+    bool calendarTyping = false;
+    bool camFollow = true, showNews = true; int followShow = -1; double lastTerritoryPaint = 0;
     WebView web;
     bool flowWind = false, flowCurrents = false;
     FlowLayer windFlow, curFlow; curFlow.currents = true; curFlow.rng = 999;
@@ -586,6 +617,20 @@ int main() {
         if (getenv("WB_WEBFOCUS")) web.focusOn({EntKind::Character, charUi.sel});
         printf("CHARS %zu links %zu\n", app.doc.characters.size(), app.doc.links.size());
     }
+    if (const char* ys = getenv("WB_SIM")) {
+        app.sim.begin(app.doc, app.world);
+        if (getenv("WB_FOLLOW")) { followShow = app.sim.personToFollow(app.doc, atoi(getenv("WB_FOLLOW")), Role::Merchant); }
+        double t0 = GetTime();
+        int years = atoi(ys);
+        for (int k = 0; k < years; k++) app.sim.advanceDays(app.doc, app.world, 12.0 * app.doc.daysPerMonth);
+        int living = 0, fallen = 0; for (auto& ch : app.doc.characters) if (ch.alive(app.doc.simYear)) living++;
+        for (auto& n : app.doc.nations) if (n.fell <= app.doc.simYear) fallen++;
+        printf("SIM %d years in %.2fs: year %d, %zu chars (%d living), %d nations (%d fallen), %zu events, %zu news\n", years, GetTime() - t0, app.doc.simYear,
+               app.doc.characters.size(), living, (int)app.doc.nations.size(), fallen, app.doc.events.size(), app.sim.news.size());
+        for (size_t k = app.sim.news.size() > 25 ? app.sim.news.size() - 25 : 0; k < app.sim.news.size(); k++) printf("  %d: %s\n", app.sim.news[k].year, app.sim.news[k].text.c_str());
+        if (followShow >= 0) { auto* f = app.doc.character(followShow); printf("FOLLOW %s alive=%d\n", f->name.c_str(), f->alive(app.doc.simYear)); for (auto& e : f->log) printf("   %d/%d %s\n", e.year, e.month, e.text.c_str()); }
+        map.invalidateAll(); app.labelsDirty = true;
+    }
     if (const char* c = getenv("WB_CITY")) {
         citySel = atoi(c);
         if (getenv("WB_CITYED") && citySel < (int)app.doc.cities.size()) { map.waitIdle(); cityEd.open(citySel, app.planet, app.world, app.doc); }
@@ -629,6 +674,15 @@ int main() {
             UnloadDroppedFiles(files);
         }
         const float dt = GetFrameTime();
+        // ---- the living world moves on ----
+        if (app.doc.simStarted && app.doc.simSpeed > 0 && !cityEd.active) {
+            app.sim.update(app.doc, app.world, dt);
+            if (app.sim.territoryChanged && GetTime() - lastTerritoryPaint > 0.6) {
+                app.sim.territoryChanged = false; lastTerritoryPaint = GetTime();
+                map.invalidateAll(); app.labelsDirty = true;
+            }
+        }
+        if (!app.catchUpNote.empty()) { setStatus(app.catchUpNote); app.catchUpNote.clear(); }
         const int sw = GetScreenWidth(), sh = GetScreenHeight();
         const double R = app.planet.radiusKm();
         const double brushKm = 0.05 * std::pow(60000.0, (double)brushT);
@@ -660,7 +714,14 @@ int main() {
             chipBar.width = x - chipBar.x + 150;   // room for the month stepper
         }
         const bool overChips = CheckCollisionPointRec(mouse, chipBar);
-        const bool overPanel = mouse.x < panel.x + panel.width || overChips || tab == TabWeb;   // the web takes over the map area
+        // the living-world clock along the bottom, the card for the person you follow and the news
+        const Rectangle clockRect{panel.x + panel.width + 210, (float)sh - 30 - 50, 640, 42};
+        const bool anyFollowed = std::any_of(app.doc.characters.begin(), app.doc.characters.end(), [](const Character& c) { return c.followed; });
+        const Rectangle followRect{panel.x + panel.width + 12, (float)sh - 30 - 50 - 12 - 196, 380, 196};
+        const Rectangle newsRect{(float)sw - 372, 190, 360, 196};
+        const bool overHud = CheckCollisionPointRec(mouse, clockRect) || (anyFollowed && tab != TabWeb && CheckCollisionPointRec(mouse, followRect)) ||
+                             (showNews && app.doc.simStarted && !app.sim.news.empty() && tab != TabWeb && CheckCollisionPointRec(mouse, newsRect));
+        const bool overPanel = mouse.x < panel.x + panel.width || overChips || tab == TabWeb || overHud;   // the web takes over the map area
         const double minZoom = sh / 180.0, maxZoom = TileMap::TILE / 90.0 * (1 << TileMap::MAX_LEVEL) * 2;
         const bool sculptTab = (tab == TabSculpt);
         const int activeTool = sculptTab ? tool : 0;
@@ -871,6 +932,7 @@ int main() {
         if (!overPanel && !routeConsumed && (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) ||
                            (!anyTool && !clickedCity && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))))
             panning = true;
+            camFollow = false;
         if (!IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) && !IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !IsMouseButtonDown(MOUSE_BUTTON_RIGHT))
             panning = false;
         if (panning && !painting) {
@@ -1488,7 +1550,7 @@ int main() {
 
         if (tab == TabWeb) {
             web.frame(app.doc, year, Rectangle{panel.x + panel.width, 0, (float)sw - panel.x - panel.width, (float)sh - 30}, dt,
-                      mouse.x > panel.x + panel.width && !typing);
+                      mouse.x > panel.x + panel.width && !typing && !overHud);
         }
         // ---- Layer chips ----
         if (tab != TabWeb) {
@@ -2306,6 +2368,40 @@ int main() {
                         L.note(("Main partners: " + t).c_str());
                     }
                 }
+                L.heading("LIFE IN THE CITY");
+                {
+                    int shownP = 0, followPick = -1;
+                    for (auto& ch : app.doc.characters) {
+                        if (ch.city != citySel || !ch.alive(year) || shownP >= 8) continue;
+                        drawPortrait(Rectangle{L.x, L.y, 22, 26}, ch, year);
+                        std::string t = (ch.title.empty() ? "" : ch.title + " ") + ch.name;
+                        drawTextK(FontKind::Ui, t.c_str(), {L.x + 30, L.y + 1}, 14, theme::kText);
+                        drawTextK(FontKind::Ui, ch.occupation.c_str(), {L.x + 30, L.y + 15}, 11, theme::kMuted);
+                        if (GuiButton(Rectangle{L.x + L.w - 64, L.y + 2, 64, 22}, ch.followed ? "Following" : "Follow")) followPick = ch.id;
+                        L.y += 30; shownP++;
+                    }
+                    if (followPick >= 0) {
+                        app.doc.character(followPick)->followed = true; followShow = followPick; camFollow = true;
+                        if (!app.doc.simStarted) app.sim.begin(app.doc, app.world);
+                    }
+                    if (shownP == 0) L.note("No one notable lives here yet.");
+                    drawTextK(FontKind::UiBold, "Follow someone here and watch their life:", {L.x, L.y + 2}, 14, theme::kTeal);
+                    L.y += 24;
+                    static const Role picks[] = {Role::Ruler, Role::Merchant, Role::Criminal, Role::Commoner};
+                    static const char* pickNames[] = {"The ruler", "A merchant", "A criminal", "Ordinary person"};
+                    float b4 = (L.w - 6) / 2;
+                    for (int k = 0; k < 4; k++) {
+                        if (GuiButton(Rectangle{L.x + (k % 2) * (b4 + 6), L.y + (k / 2) * 32, b4, 28}, pickNames[k])) {
+                            if (!app.doc.simStarted) app.sim.begin(app.doc, app.world);
+                            int id = app.sim.personToFollow(app.doc, citySel, picks[k]);
+                            followShow = id; camFollow = true;
+                            view.centerLat = c.lat; view.centerLon = c.lon; view.pxPerDeg = std::max(view.pxPerDeg, 40.0);
+                            if (app.doc.simSpeed == 0) app.doc.simSpeed = 3;
+                            if (const Character* fc = app.doc.character(id)) setStatus("Following " + fc->name + " - time is moving (clock at the bottom)");
+                        }
+                    }
+                    L.y += 70;
+                }
                 L.heading("NOTES");
                 GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Notes");
                 if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60, 28}, cityNotesBuf, 255, cityNotesEdit)) cityNotesEdit = !cityNotesEdit;
@@ -2513,6 +2609,47 @@ int main() {
                 }
             }
         } else if (tab == TabHistory) {
+            L.heading("LIVING WORLD");
+            if (!app.doc.simStarted) {
+                L.note("Let time run: people are born, marry, trade, scheme and die; rulers are succeeded or overthrown; nations go to war, rebel and fall. Everything important is written into this timeline.");
+                if (L.primary("Start the living world")) {
+                    if (app.doc.nations.empty()) setStatus("Make nations first (Nations tab)");
+                    else { app.sim.begin(app.doc, app.world); app.doc.simSpeed = 3; }
+                }
+            } else {
+                L.label(TextFormat("Date: %s", dateString(app.doc, app.doc.simYear, app.doc.simMonth, app.doc.simDay).c_str()));
+                int sp = app.doc.simSpeed;
+                GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 14) / 8, 26}, "||;1x;2x;5x;10x;20x;50x;100x", &sp);
+                app.doc.simSpeed = sp;
+                L.y += 32;
+                GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 4) / 3, 26}, "Real time;1 day/sec;1 month/sec", &app.doc.simBase);
+                L.y += 34;
+                L.check("Keep time moving while the app is closed", &app.doc.simCatchUp);
+                L.check("Show the news on the map", &showNews);
+                int living = 0, fallen = 0;
+                for (auto& ch : app.doc.characters) if (ch.alive(year)) living++;
+                for (auto& n : app.doc.nations) if (n.fell <= year) fallen++;
+                L.label(TextFormat("People: %d living", living));
+                L.label(TextFormat("Nations: %d standing, %d fallen", (int)app.doc.nations.size() - fallen, fallen));
+                if (L.button("Skip ahead 10 years")) { for (int k = 0; k < 10; k++) app.sim.advanceDays(app.doc, app.world, 12.0 * app.doc.daysPerMonth); map.invalidateAll(); app.labelsDirty = true; }
+            }
+            L.heading("CALENDAR");
+            {
+                float dpm = (float)app.doc.daysPerMonth;
+                L.label(TextFormat("Days in a month: %d", app.doc.daysPerMonth)); L.slider(&dpm, 7, 45); app.doc.daysPerMonth = (int)std::round(dpm);
+                static int monthEdit = -1; static char monthBuf[48] = "";
+                if (app.doc.monthNames.size() < 12) for (int m = (int)app.doc.monthNames.size(); m < 12; m++) app.doc.monthNames.push_back("");
+                float hw = (L.w - 6) / 2;
+                for (int m = 0; m < 12; m++) {
+                    Rectangle r{L.x + (m % 2) * (hw + 6), L.y + (m / 2) * 30, hw, 26};
+                    if (monthEdit == m) {
+                        if (GuiTextBox(r, monthBuf, 47, true)) { app.doc.monthNames[m] = monthBuf; monthEdit = -1; }
+                    } else if (GuiButton(r, monthName(app.doc, m))) { monthEdit = m; snprintf(monthBuf, sizeof monthBuf, "%s", monthName(app.doc, m)); }
+                }
+                L.y += 6 * 30 + 4;
+                L.note("Click a month to rename it (Enter to finish). Your calendar is used for every date in the living world.");
+                calendarTyping = monthEdit >= 0;
+            }
             L.heading("TIMELINE");
             float yUi = (float)app.doc.currentYear;
             L.label(TextFormat("Year: %d", app.doc.currentYear)); L.slider(&yUi, (float)app.doc.yearMin, (float)app.doc.yearMax);
@@ -2880,6 +3017,197 @@ int main() {
                 for (size_t k = 0; k < lines.size(); k++) drawTextK(FontKind::Ui, lines[k].first.c_str(), {box.x + 14, box.y + 40 + k * 19.f}, 14, lines[k].second);
             }
         }
+        // ---- Living world: people on the map, the clock, the person you follow, the news ----
+        auto charPos = [&](const Character& c, double& lat, double& lon) {
+            if (c.city < 0 || c.city >= (int)app.doc.cities.size()) return false;
+            const City& h = app.doc.cities[c.city];
+            lat = h.lat; lon = h.lon;
+            if (c.travelTo >= 0 && c.travelTo < (int)app.doc.cities.size()) {
+                const City& d = app.doc.cities[c.travelTo];
+                double t = clampd(c.travelT, 0, 1);
+                lat = h.lat + (d.lat - h.lat) * t; lon = h.lon + std::remainder(d.lon - h.lon, 360.0) * t;
+            }
+            return true;
+        };
+        std::vector<int> followedIds;
+        for (auto& c : app.doc.characters) if (c.followed && (c.alive(year) || c.died >= year - 1)) followedIds.push_back(c.id);
+        if (!followedIds.empty() && std::find(followedIds.begin(), followedIds.end(), followShow) == followedIds.end()) followShow = followedIds.back();
+        if (followedIds.empty()) followShow = -1;
+        // camera rides along with the person you follow
+        if (camFollow && followShow >= 0 && tab != TabWeb && !panning) {
+            if (const Character* fc = app.doc.character(followShow)) {
+                double la, lo;
+                if (charPos(*fc, la, lo)) {
+                    double k = std::min(1.0, dt * 2.5);
+                    view.centerLat += (la - view.centerLat) * k;
+                    view.centerLon += std::remainder(lo - view.centerLon, 360.0) * k;
+                }
+            }
+        }
+        if (tab != TabWeb && showCities) {
+            // residents around each city when zoomed in, and markers for the people you follow
+            if (view.pxPerDeg >= 30 && !app.doc.characters.empty()) {
+                std::unordered_map<int, int> perCity;
+                for (auto& c : app.doc.characters) {
+                    if (!c.alive(year) || c.city < 0 || c.city >= (int)app.doc.cities.size() || c.followed || c.travelTo >= 0) continue;
+                    if (ageIn(c, year) < 16) continue;
+                    int& k = perCity[c.city];
+                    if (k >= 8) continue;
+                    const City& ct = app.doc.cities[c.city];
+                    Vector2 p = toScreen(ct.lat, ct.lon);
+                    if (p.x < panel.x + panel.width || p.x > sw || p.y < 0 || p.y > sh) { k++; continue; }
+                    float a = -1.2f + k * 0.42f, rr = 34;
+                    Vector2 q{p.x + std::cos(a) * rr, p.y + std::sin(a) * rr};
+                    Rectangle pr{q.x - 10, q.y - 12, 20, 24};
+                    drawPortrait(pr, c, year);
+                    bool hov = CheckCollisionPointRec(mouse, pr);
+                    DrawRectangleLinesEx(pr, 1, hov ? theme::kAccentHi : Color{20, 24, 33, 255});
+                    if (hov) {
+                        std::string t = (c.title.empty() ? "" : c.title + " ") + c.name + ", " + c.occupation;
+                        Vector2 ts = measureTextK(FontKind::Ui, t.c_str(), 13);
+                        theme::card(Rectangle{q.x + 14, q.y - 12, ts.x + 16, 24});
+                        drawTextK(FontKind::Ui, t.c_str(), {q.x + 22, q.y - 7}, 13, theme::kText);
+                        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) { charUi.sel = c.id; tab = TabCharacters; }
+                    }
+                    k++;
+                }
+            }
+            for (int id : followedIds) {
+                const Character* fc = app.doc.character(id);
+                double la, lo;
+                if (!fc || !charPos(*fc, la, lo)) continue;
+                Vector2 p = toScreen(la, lo);
+                if (p.x < panel.x + panel.width || p.x > sw || p.y < 0 || p.y > sh) continue;
+                Rectangle pr{p.x - 15, p.y - 52, 30, 36};
+                DrawTriangle({p.x - 6, p.y - 17}, {p.x, p.y - 6}, {p.x + 6, p.y - 17}, theme::kAccent);
+                drawPortrait(pr, *fc, year);
+                DrawRectangleLinesEx(pr, 2, id == followShow ? theme::kAccentHi : theme::kAccent);
+                Vector2 ts = measureTextK(FontKind::UiBold, fc->name.c_str(), 13);
+                DrawRectangleRounded({p.x - ts.x / 2 - 5, p.y - 72, ts.x + 10, 18}, 0.4f, 4, Color{20, 24, 33, 220});
+                drawTextK(FontKind::UiBold, fc->name.c_str(), {p.x - ts.x / 2, p.y - 70}, 13, theme::kAccentHi);
+            }
+        }
+        // the clock
+        {
+            theme::card(clockRect);
+            float x = clockRect.x + 12, cy = clockRect.y + clockRect.height / 2;
+            if (!app.doc.simStarted) {
+                drawTextK(FontKind::UiBold, "The living world is paused at the start", {x, cy - 9}, 15, theme::kMuted);
+                Rectangle b{clockRect.x + clockRect.width - 230, clockRect.y + 7, 218, 28};
+                bool hov = CheckCollisionPointRec(mouse, b);
+                DrawRectangleRounded(b, 0.3f, 6, hov ? theme::kAccentHi : theme::kAccent);
+                Vector2 ts = measureTextK(FontKind::UiBold, "Start the living world", 15);
+                drawTextK(FontKind::UiBold, "Start the living world", {b.x + b.width / 2 - ts.x / 2, b.y + 6}, 15, Color{30, 22, 10, 255});
+                if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    if (app.doc.nations.empty()) setStatus("Make nations first (Nations tab), then start the living world");
+                    else { app.sim.begin(app.doc, app.world); app.doc.simSpeed = 3; setStatus("Time is moving. Pick someone to follow in the Cities or Characters tab."); }
+                }
+            } else {
+                std::string date = dateString(app.doc, app.doc.simYear, app.doc.simMonth, app.doc.simDay);
+                drawTextK(FontKind::Serif, date.c_str(), {x, cy - 12}, 20, theme::kAccentHi);
+                float bx = clockRect.x + 236;
+                const char* labels[] = {"||", "1x", "2x", "5x", "10x", "20x", "50x", "100x"};
+                for (int i = 0; i < kSimSpeedCount; i++) {
+                    Rectangle b{bx, clockRect.y + 8, i == 0 ? 30.f : (i >= 6 ? 42.f : 36.f), 26};
+                    bool on = app.doc.simSpeed == i, hov = CheckCollisionPointRec(mouse, b);
+                    DrawRectangleRounded(b, 0.3f, 6, on ? theme::kAccent : hov ? Color{52, 60, 80, 255} : Color{32, 38, 52, 255});
+                    Vector2 ts = measureTextK(FontKind::UiBold, labels[i], 13);
+                    drawTextK(FontKind::UiBold, labels[i], {b.x + b.width / 2 - ts.x / 2, b.y + 6}, 13, on ? Color{30, 22, 10, 255} : theme::kText);
+                    if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) app.doc.simSpeed = i;
+                    bx += b.width + 3;
+                }
+                static const char* bases[] = {"Real time", "1 day / sec", "1 month / sec"};
+                Rectangle bb{bx + 6, clockRect.y + 8, clockRect.x + clockRect.width - bx - 16, 26};
+                bool hb = CheckCollisionPointRec(mouse, bb);
+                DrawRectangleRounded(bb, 0.3f, 6, hb ? Color{52, 60, 80, 255} : Color{32, 38, 52, 255});
+                const char* bl = bases[std::max(0, std::min(2, app.doc.simBase))];
+                Vector2 ts = measureTextK(FontKind::Ui, bl, 13);
+                drawTextK(FontKind::Ui, bl, {bb.x + bb.width / 2 - ts.x / 2, bb.y + 6}, 13, theme::kTeal);
+                if (hb && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) app.doc.simBase = (app.doc.simBase + 1) % 3;
+                if (hb) {
+                    const char* tip = "Click to change what 1x means: real time, a day each second, or a month each second";
+                    Vector2 t2 = measureTextK(FontKind::Ui, tip, 13);
+                    theme::card(Rectangle{bb.x + bb.width - t2.x - 16, bb.y - 34, t2.x + 16, 26});
+                    drawTextK(FontKind::Ui, tip, {bb.x + bb.width - t2.x - 8, bb.y - 29}, 13, theme::kText);
+                }
+            }
+        }
+        // the person you follow
+        if (followShow >= 0 && tab != TabWeb) {
+            const Character* fc = app.doc.character(followShow);
+            if (fc) {
+                Rectangle r = followRect;
+                theme::card(r, theme::kAccent);
+                drawPortrait(Rectangle{r.x + 12, r.y + 12, 64, 76}, *fc, year);
+                DrawRectangleLinesEx(Rectangle{r.x + 12, r.y + 12, 64, 76}, 1, theme::kAccent);
+                float tx = r.x + 88;
+                drawTextK(FontKind::Serif, fc->name.c_str(), {tx, r.y + 10}, 20, theme::kAccentHi);
+                std::string who = (fc->title.empty() ? std::string("") : fc->title + ", ") + fc->occupation + (fc->alive(year) ? TextFormat(", age %d", ageIn(*fc, year)) : ", dead");
+                drawTextK(FontKind::Ui, who.c_str(), {tx, r.y + 34}, 13, theme::kText);
+                std::string where = fc->travelTo >= 0 && fc->travelTo < (int)app.doc.cities.size() ? "On the road to " + app.doc.cities[fc->travelTo].name
+                                  : fc->city >= 0 && fc->city < (int)app.doc.cities.size() ? "In " + app.doc.cities[fc->city].name : std::string("Wandering");
+                drawTextK(FontKind::Ui, (where + TextFormat("   \xE2\x80\xA2   %s coins", withCommas(fc->wealth))).c_str(), {tx, r.y + 52}, 13, theme::kMuted);
+                float ly = r.y + 96;
+                int shown = 0;
+                for (int i = (int)fc->log.size() - 1; i >= 0 && shown < 3; i--, shown++) {
+                    std::string t = TextFormat("%s %d: ", monthName(app.doc, fc->log[i].month), fc->log[i].year) + fc->log[i].text;
+                    while (t.size() > 8 && measureTextK(FontKind::Ui, t.c_str(), 13).x > r.width - 24) t = t.substr(0, t.size() - 4) + "..";
+                    drawTextK(FontKind::Ui, t.c_str(), {r.x + 12, ly}, 13, shown == 0 ? theme::kText : theme::kMuted);
+                    ly += 18;
+                }
+                if (fc->log.empty()) drawTextK(FontKind::Ui, "Nothing has happened to them yet. Start time with the clock below.", {r.x + 12, ly}, 13, theme::kMuted);
+                // buttons
+                float by = r.y + 12, bx = r.x + r.width - 30;
+                auto small = [&](const char* t, float& bxx) {
+                    Rectangle b{bxx, by, 24, 22};
+                    bool hov = CheckCollisionPointRec(mouse, b);
+                    DrawRectangleRounded(b, 0.3f, 4, hov ? Color{52, 60, 80, 255} : Color{32, 38, 52, 255});
+                    Vector2 ts = measureTextK(FontKind::UiBold, t, 13);
+                    drawTextK(FontKind::UiBold, t, {b.x + 12 - ts.x / 2, b.y + 3}, 13, theme::kText);
+                    bxx -= 28;
+                    return hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+                };
+                if (small("x", bx)) { app.doc.character(followShow)->followed = false; followShow = -1; }
+                else if (small(">", bx) && followedIds.size() > 1) { auto it = std::find(followedIds.begin(), followedIds.end(), followShow); followShow = followedIds[(it - followedIds.begin() + 1) % followedIds.size()]; }
+                else if (small("<", bx) && followedIds.size() > 1) { auto it = std::find(followedIds.begin(), followedIds.end(), followShow); followShow = followedIds[(it - followedIds.begin() + followedIds.size() - 1) % followedIds.size()]; }
+                Rectangle cb{r.x + r.width - 132, r.y + r.height - 30, 120, 22};
+                bool hc = CheckCollisionPointRec(mouse, cb);
+                DrawRectangleRounded(cb, 0.3f, 4, camFollow ? theme::kTeal : hc ? Color{52, 60, 80, 255} : Color{32, 38, 52, 255});
+                const char* ct = camFollow ? "Camera follows" : "Camera free";
+                Vector2 cts = measureTextK(FontKind::Ui, ct, 13);
+                drawTextK(FontKind::Ui, ct, {cb.x + 60 - cts.x / 2, cb.y + 3}, 13, camFollow ? Color{10, 30, 30, 255} : theme::kText);
+                if (hc && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) { camFollow = !camFollow; if (camFollow) view.pxPerDeg = std::max(view.pxPerDeg, 35.0); }
+                Rectangle ob{r.x + r.width - 200, r.y + r.height - 30, 62, 22};
+                bool ho = CheckCollisionPointRec(mouse, ob);
+                DrawRectangleRounded(ob, 0.3f, 4, ho ? Color{52, 60, 80, 255} : Color{32, 38, 52, 255});
+                drawTextK(FontKind::Ui, "Open", {ob.x + 16, ob.y + 3}, 13, theme::kText);
+                if (ho && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) { charUi.sel = followShow; tab = TabCharacters; }
+            }
+        }
+        // the news
+        if (showNews && app.doc.simStarted && !app.sim.news.empty() && tab != TabWeb) {
+            Rectangle r = newsRect;
+            theme::card(r);
+            drawTextK(FontKind::UiBold, "NEWS OF THE WORLD", {r.x + 12, r.y + 8}, 12, theme::kAccent);
+            float y = r.y + 28;
+            int shown = 0;
+            for (int i = (int)app.sim.news.size() - 1; i >= 0 && shown < 7; i--, shown++) {
+                const SimNews& nw = app.sim.news[i];
+                std::string t = nw.text;
+                std::string when = TextFormat("%d", nw.year);
+                while (t.size() > 8 && measureTextK(FontKind::Ui, t.c_str(), 13).x > r.width - 70) t = t.substr(0, t.size() - 4) + "..";
+                Rectangle row{r.x + 6, y - 2, r.width - 12, 22};
+                bool hov = CheckCollisionPointRec(mouse, row);
+                if (hov) DrawRectangleRounded(row, 0.3f, 4, Color{40, 46, 62, 255});
+                drawTextK(FontKind::UiBold, when.c_str(), {r.x + 12, y + 1}, 12, theme::kAccent);
+                drawTextK(FontKind::Ui, t.c_str(), {r.x + 56, y}, 13, nw.character >= 0 ? theme::kText : Color{240, 210, 160, 255});
+                if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    if (nw.city >= 0 && nw.city < (int)app.doc.cities.size()) { view.centerLat = app.doc.cities[nw.city].lat; view.centerLon = app.doc.cities[nw.city].lon; camFollow = false; }
+                    if (nw.character >= 0) { charUi.sel = nw.character; }
+                }
+                y += 23;
+            }
+        }
         // ---- Readouts ----
         const int fs = 15;
         double kmPerPx = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
@@ -2928,8 +3256,8 @@ int main() {
             for (auto& s : lines) tw = std::max(tw, uiMeasure(s.c_str(), fs));
             int nl = windLine.empty() ? 6 : 7;
             int bh = nl * 20 + 16;
-            theme::card(Rectangle{(float)sw - tw - 34, (float)sh - bh - 42, (float)tw + 24, (float)bh});
-            for (int i = 0; i < nl; i++) uiText(lines[i].c_str(), sw - tw - 22, sh - bh - 34 + i * 20, fs, i == 1 ? theme::kAccentHi : theme::kText);
+            theme::card(Rectangle{(float)sw - tw - 34, (float)sh - bh - 92, (float)tw + 24, (float)bh});
+            for (int i = 0; i < nl; i++) uiText(lines[i].c_str(), sw - tw - 22, sh - bh - 84 + i * 20, fs, i == 1 ? theme::kAccentHi : theme::kText);
         }
         if ((hoverEvent >= 0 || hoverPin >= 0) && hoverCity < 0 && hoverDeposit < 0) {
             std::string t1, t2;
@@ -3157,7 +3485,7 @@ int main() {
         if (++shotFrames == (getenv("WB_FRAMES") ? atoi(getenv("WB_FRAMES")) : 30)) { TakeScreenshot(getenv("WB_SHOT") ? getenv("WB_SHOT") : "shot.png"); break; }
 #endif
         typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
-                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || charUi.typing() || web.typing() || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
+                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || charUi.typing() || web.typing() || calendarTyping || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
 
         // ---- Exports (after the frame, so the message above is visible while it works) ----
         static int exportFrames = 0;
@@ -3329,6 +3657,12 @@ int main() {
         }
     }
 
+#ifndef WB_SHOTS
+    {   // save on the way out so the world can continue later
+        std::string err;
+        saveWorld(worldsFolder() + "/autosave.world", app.makeSave(), err);
+    }
+#endif
     cityEd.close();
     if (haveTrace) UnloadTexture(traceTex);
     if (haveGlobe) UnloadTexture(globeTex);

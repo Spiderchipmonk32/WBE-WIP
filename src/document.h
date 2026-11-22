@@ -180,6 +180,16 @@ struct Document {
     CityPlan* planFor(int city) { for (auto& p : plans) if (p.city == city) return &p; return nullptr; }
     std::vector<CustomRoute> customRoutes;
     std::vector<Character> characters;
+    // ---- living world ----
+    int simYear = 0, simMonth = 0, simDay = 0;   // where the simulation has reached
+    bool simStarted = false;
+    int simSpeed = 0;              // index into kSimSpeeds (0 = paused)
+    int simBase = 1;               // 0: real time (1 s = 1 s), 1: story time (1 s = 1 day), 2: fast (1 s = 1 month)
+    bool simCatchUp = true;        // keep going while the app is closed
+    long long simWallClock = 0;    // unix time when last saved
+    double simCarryDays = 0;
+    std::vector<std::string> monthNames;   // the calendar (empty = default)
+    int daysPerMonth = 30;
     std::vector<Link> links;
     int nextCharId = 1;
     Character* character(int id) { for (auto& c : characters) if (c.id == id) return &c; return nullptr; }
