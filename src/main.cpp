@@ -1,10 +1,12 @@
 // Worldbuilder: 2D world map of a round planet, with simulations layered on top.
 #include "raylib.h"
+#include "fonts.h"
 #include "raygui.h"
 #include "planet.h"
 #include "world.h"
 #include "tilemap.h"
 #include "ui.h"
+#include "theme.h"
 #include "persistence.h"
 #include "politics.h"
 #include "trade.h"
@@ -57,12 +59,12 @@ void drawGrid(const MapView& v, int sw, int sh, int left, Color c) {
     for (double lon = std::floor(lonMin / step) * step; lon <= lonMax; lon += step) {
         int x = (int)(sw / 2.0 + (lon - v.centerLon) * v.pxPerDeg);
         DrawLine(x, yTop, x, yBot, c);
-        if (x > left) DrawText(TextFormat(fmt, std::fabs(wrapLon(lon))), x + 3, std::max(yTop, 0) + 50, 14, c);
+        if (x > left) uiText(TextFormat(fmt, std::fabs(wrapLon(lon))), x + 3, std::max(yTop, 0) + 50, 14, c);
     }
     for (double lat = std::ceil(latMin / step) * step; lat <= latMax; lat += step) {
         int y = (int)(sh / 2.0 - (lat - v.centerLat) * v.pxPerDeg);
         DrawLine(0, y, sw, y, c);
-        DrawText(TextFormat(fmt, std::fabs(lat)), left + 6, y + 3, 14, c);
+        uiText(TextFormat(fmt, std::fabs(lat)), left + 6, y + 3, 14, c);
     }
 }
 
@@ -75,7 +77,7 @@ void drawScaleBar(const MapView& v, double R, int x, int y, Color c) {
     DrawRectangle(x, y, len, 4, c);
     DrawRectangle(x, y - 6, 2, 10, c);
     DrawRectangle(x + len - 2, y - 6, 2, 10, c);
-    DrawText(formatKm(nice), x, y - 26, 18, c);
+    uiText(formatKm(nice), x, y - 26, 18, c);
 }
 
 void drawArrow(Vector2 a, Vector2 b, Color c, float thick) {
@@ -271,7 +273,11 @@ int main() {
     InitWindow(1600, 900, "Worldbuilder");
     SetTargetFPS(144);
     SetExitKey(KEY_NULL);   // Escape shouldn't close the app (it's used to stop typing)
-    GuiSetStyle(DEFAULT, TEXT_SIZE, 18);
+    fontsInit();
+    GuiSetFont(fontFor(FontKind::Ui, 17));
+    GuiSetStyle(DEFAULT, TEXT_SIZE, 17);
+    GuiSetStyle(DEFAULT, TEXT_SPACING, 0);
+    theme::apply();
 
     App app;
     CityEditor cityEd;
@@ -354,6 +360,15 @@ int main() {
     int climateViewUi = -1;
     float brushT = 0.80f, strengthT = 0.851f;
 
+#ifdef WB_SHOTS
+    // Developer hook: render a few frames on a chosen tab, save a screenshot and quit (used for automated UI checks)
+    int shotFrames = 0;
+    if (const char* t = getenv("WB_TAB")) tab = atoi(t);
+    if (const char* o = getenv("WB_OVERLAY")) overlayUi = atoi(o);
+    if (const char* z = getenv("WB_ZOOM")) view.pxPerDeg *= atof(z);
+    if (const char* la = getenv("WB_LAT")) view.centerLat = atof(la);
+    if (const char* lo = getenv("WB_LON")) view.centerLon = atof(lo);
+#endif
     while (!WindowShouldClose()) {
         if (cityEd.active) {   // the city editor takes over the whole screen
             cityEd.frame(app.planet, app.world, app.doc);
@@ -376,9 +391,10 @@ int main() {
         const double R = app.planet.radiusKm();
         const double brushKm = 0.05 * std::pow(60000.0, (double)brushT);
         const double strength = 0.1 * std::pow(50000.0, (double)strengthT);
-        const Rectangle panel = {10, 10, 340, (float)sh - 20};
+        const Rectangle railRect = {0, 0, 64, (float)sh};
+        const Rectangle panel = {64, 0, 350, (float)sh};
         const Vector2 mouse = GetMousePosition();
-        const bool overPanel = CheckCollisionPointRec(mouse, panel);
+        const bool overPanel = mouse.x < panel.x + panel.width;
         const double minZoom = sh / 180.0, maxZoom = TileMap::TILE / 90.0 * (1 << TileMap::MAX_LEVEL) * 2;
         const bool sculptTab = (tab == TabSculpt);
         const int activeTool = sculptTab ? tool : 0;
@@ -663,15 +679,16 @@ int main() {
                 Vector2 p = toScreen(lb.lat, lb.lon);
                 std::string up = app.doc.nations[n].name;
                 for (char& ch : up) ch = (char)std::toupper((unsigned char)ch);
-                float spacing = size * 0.35f;
-                if (lb.stretch > 1.4) spacing = size * (float)clampd(0.35 + (lb.stretch - 1.4) * 0.25, 0.35, 0.9);   // spread out along long countries
-                Vector2 ts = MeasureTextEx(GetFontDefault(), up.c_str(), size, spacing);
+                float spacing = size * 0.18f;
+                if (lb.stretch > 1.4) spacing = size * (float)clampd(0.18 + (lb.stretch - 1.4) * 0.25, 0.18, 0.8);   // spread out along long countries
+                Font lf = fontFor(FontKind::Serif, size);
+                Vector2 ts = MeasureTextEx(lf, up.c_str(), size, spacing);
                 if (p.x + ts.x / 2 < panel.x + panel.width || p.x - ts.x / 2 > sw) continue;
                 bool fantasy = map.style() == MapStyle::Fantasy;
                 float rot = rotateLabels && lb.stretch > 1.25 ? (float)-lb.angle : 0.f;   // screen y points down
                 Vector2 origin{ts.x / 2, ts.y / 2};
-                if (!fantasy) DrawTextPro(GetFontDefault(), up.c_str(), {p.x + 1.5f, p.y + 1.5f}, origin, rot, size, spacing, Fade(BLACK, 0.6f));
-                DrawTextPro(GetFontDefault(), up.c_str(), p, origin, rot, size, spacing, fantasy ? Color{80, 50, 30, 220} : Fade(RAYWHITE, 0.92f));
+                if (!fantasy) DrawTextPro(lf, up.c_str(), {p.x + 1.5f, p.y + 1.5f}, origin, rot, size, spacing, Fade(BLACK, 0.6f));
+                DrawTextPro(lf, up.c_str(), p, origin, rot, size, spacing, fantasy ? Color{80, 50, 30, 220} : Fade(RAYWHITE, 0.92f));
             }
         }
         // ---- Trade routes ----
@@ -752,7 +769,7 @@ int main() {
                         if (p.x < panel.x + panel.width || p.x > sw || p.y < 0 || p.y > sh) continue;
                         DrawLineEx({p.x - 4, p.y - 4}, {p.x + 4, p.y + 4}, 2, DARKGRAY);
                         DrawLineEx({p.x - 4, p.y + 4}, {p.x + 4, p.y - 4}, 2, DARKGRAY);
-                        if (showLabels && view.pxPerDeg >= 30) DrawText((c.name + " (ruins)").c_str(), (int)p.x + 8, (int)p.y - 7, 14, DARKGRAY);
+                        if (showLabels && view.pxPerDeg >= 30) uiText((c.name + " (ruins)").c_str(), (int)p.x + 8, (int)p.y - 7, 14, DARKGRAY);
                     }
                     continue;
                 }
@@ -772,8 +789,8 @@ int main() {
                 if (i == citySel) DrawCircleLines((int)p.x, (int)p.y, r + 7, YELLOW);
                 if (showLabels && view.pxPerDeg >= need * 1.6) {
                     int fsz = c.capital ? 18 : (popNow > 100000 ? 16 : 14);
-                    if (!fantasy) DrawText(c.name.c_str(), (int)p.x + 9, (int)p.y - 7, fsz, BLACK);
-                    DrawText(c.name.c_str(), (int)p.x + 8, (int)p.y - 8, fsz, fantasy ? Color{60, 40, 25, 255} : RAYWHITE);
+                    if (!fantasy) uiText(c.name.c_str(), (int)p.x + 9, (int)p.y - 7, fsz, BLACK);
+                    uiText(c.name.c_str(), (int)p.x + 8, (int)p.y - 8, fsz, fantasy ? Color{60, 40, 25, 255} : RAYWHITE);
                 }
             }
         }
@@ -790,7 +807,7 @@ int main() {
                 bool recent = year - e.year < 50;
                 DrawCircleV(p, 9, recent ? WHITE : Fade(WHITE, 0.6f));
                 DrawCircleV(p, 7.5f, recent ? col[t] : Fade(col[t], 0.55f));
-                DrawText(sym[t], (int)p.x - MeasureText(sym[t], 14) / 2, (int)p.y - 7, 14, WHITE);
+                uiText(sym[t], (int)p.x - uiMeasure(sym[t], 14) / 2, (int)p.y - 7, 14, WHITE);
                 if (i == eventSel) DrawCircleLines((int)p.x, (int)p.y, 13, YELLOW);
             }
         }
@@ -806,8 +823,8 @@ int main() {
                 DrawLine((int)p.x - 2, (int)p.y, (int)p.x + 3, (int)p.y, Color{110, 60, 30, 255});
                 if (i == loreSel) DrawCircleLines((int)p.x, (int)p.y, 13, YELLOW);
                 if (showLabels && view.pxPerDeg >= 10) {
-                    DrawText(a.title.c_str(), (int)p.x + 10, (int)p.y - 6, 15, BLACK);
-                    DrawText(a.title.c_str(), (int)p.x + 9, (int)p.y - 7, 15, Color{255, 235, 190, 255});
+                    uiText(a.title.c_str(), (int)p.x + 10, (int)p.y - 6, 15, BLACK);
+                    uiText(a.title.c_str(), (int)p.x + 9, (int)p.y - 7, 15, Color{255, 235, 190, 255});
                 }
             }
         }
@@ -889,10 +906,25 @@ int main() {
         }
 
         // ---- Panel ----
-        GuiPanel(panel, NULL);
-        Layout L{panel.x + 14, panel.y + 12, panel.width - 28};
-        GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 12) / 4, 28}, "World;Map;Sculpt;Resources\nClimate;Nations;Cities;Trade\nHistory;Lore;File;Peoples", &tab);
-        L.y += 104;
+        {
+            int clicked = theme::rail(railRect, tab);
+            if (clicked >= 0 && !typing) tab = clicked;
+        }
+        const float contentTop = theme::header(panel, tab);
+        const float contentBottom = panel.y + panel.height - 8;
+        static float panelScroll[16] = {0};
+        static float panelContentH[16] = {0};
+        float& pScroll = panelScroll[tab];
+        if (overPanel && mouse.x > panel.x && !typing) {
+            float wv = GetMouseWheelMove();
+            if (wv != 0) pScroll -= wv * 60;
+        }
+        pScroll = std::max(0.f, std::min(pScroll, std::max(0.f, panelContentH[tab] - (contentBottom - contentTop))));
+        Layout L{panel.x + 18, contentTop + 6 - pScroll, panel.width - 40};
+        const float layoutStartY = L.y;
+        BeginScissorMode((int)panel.x, (int)contentTop, (int)panel.width, (int)(contentBottom - contentTop));
+        const bool lockHidden = overPanel && mouse.y < contentTop;   // controls scrolled up under the header can't be clicked
+        if (lockHidden) GuiLock();
         const int month = (int)std::round(monthUi);
 
         if (tab == 0) {
@@ -929,7 +961,7 @@ int main() {
             L.label(TextFormat("Plates: %d", (int)platesUi)); L.slider(&platesUi, 4, 30);
             L.label(TextFormat("Tectonic activity: %.1f", activityUi)); L.slider(&activityUi, 0, 2);
             L.label(TextFormat("Erosion: %.1f", erosionUi)); L.slider(&erosionUi, 0, 2.5f);
-            bool genClicked = L.button("Generate planet", 34);
+            bool genClicked = L.primary("Generate planet");
             L.heading("STATS");
             L.label(TextFormat("Land: %.1f%%", app.stats.landPercent));
             L.label(TextFormat("Highest: %.0f m   Deepest: %.0f m", app.stats.highestM, app.stats.deepestM));
@@ -1102,7 +1134,7 @@ int main() {
                     if (GuiTextBox(Rectangle{L.x, L.y, L.w, 26}, customSettingBuf, 127, customSettingEdit)) customSettingEdit = !customSettingEdit;
                     c.setting = customSettingBuf;
                     L.y += 30;
-                    DrawText("Rock:", (int)L.x, (int)L.y + 2, 15, GRAY);
+                    uiText("Rock:", (int)L.x, (int)L.y + 2, 15, theme::kMuted);
                     static const char* rk[] = {"Sea floor", "Sediment", "Volcanic", "Granite", "Metamorph.", "Shield"};
                     for (int i = 0; i < 6; i++) {
                         bool on = (c.rocks >> i) & 1;
@@ -1110,7 +1142,7 @@ int main() {
                         c.rocks = (uint8_t)((c.rocks & ~(1 << i)) | (on ? 1 << i : 0));
                     }
                     L.y += 46;
-                    DrawText("Near:", (int)L.x, (int)L.y + 2, 15, GRAY);
+                    uiText("Near:", (int)L.x, (int)L.y + 2, 15, theme::kMuted);
                     static const char* bd[] = {"Anywhere", "Collision", "Subduction", "Island arc", "Rift", "Ridge", "Fault"};
                     for (int i = 0; i < 7; i++) {
                         bool on = (c.boundaries >> i) & 1;
@@ -1120,8 +1152,8 @@ int main() {
                     L.y += 68;
                     auto pair = [&](const char* la, float* a, float amin, float amax, const char* lb, float* b, float bmin, float bmax) {
                         float hw = (L.w - 10) / 2;
-                        DrawText(TextFormat(la, *a), (int)L.x, (int)L.y, 14, DARKGRAY);
-                        DrawText(TextFormat(lb, *b), (int)(L.x + hw + 10), (int)L.y, 14, DARKGRAY);
+                        uiText(TextFormat(la, *a), (int)L.x, (int)L.y, 14, theme::kMuted);
+                        uiText(TextFormat(lb, *b), (int)(L.x + hw + 10), (int)L.y, 14, theme::kMuted);
                         GuiSliderBar(Rectangle{L.x, L.y + 16, hw, 14}, NULL, NULL, a, amin, amax);
                         GuiSliderBar(Rectangle{L.x + hw + 10, L.y + 16, hw, 14}, NULL, NULL, b, bmin, bmax);
                         if (*a > *b && bmin == amin) std::swap(*a, *b);
@@ -1662,7 +1694,7 @@ int main() {
                 }
                 float lx = L.x;
                 for (size_t k = 0; k < links.size() && k < 6; k++) {
-                    float wbtn = (float)MeasureText(links[k].c_str(), 16) + 16;
+                    float wbtn = (float)uiMeasure(links[k].c_str(), 16) + 16;
                     if (lx + wbtn > L.x + L.w) break;
                     if (GuiButton(Rectangle{lx, L.y, wbtn, 24}, links[k].c_str())) {
                         int found = -1;
@@ -1686,6 +1718,20 @@ int main() {
             if (L.button("Undo (Ctrl+Z)", 30)) doUndo();
             if (L.button("Update climate for new terrain", 30)) app.recalcClimate();
             L.note("Left-drag on the map to sculpt. Keys 1-5 switch tools, [ and ] resize the brush.");
+        }
+        if (lockHidden) GuiUnlock();
+        EndScissorMode();
+        panelContentH[tab] = L.y - layoutStartY + 30;
+        {
+            float viewH = contentBottom - contentTop;
+            if (panelContentH[tab] > viewH) {   // scrollbar
+                float barH = std::max(30.f, viewH * viewH / panelContentH[tab]);
+                float barY = contentTop + (viewH - barH) * (pScroll / (panelContentH[tab] - viewH));
+                DrawRectangleRounded({panel.x + panel.width - 9, barY, 4, barH}, 1, 4, Color{80, 90, 112, 200});
+                // fade at the bottom edge to hint there is more
+                if (pScroll < panelContentH[tab] - viewH - 2)
+                    DrawRectangleGradientV((int)panel.x, (int)contentBottom - 30, (int)panel.width - 1, 30, Fade(theme::kPanel, 0), theme::kPanel);
+            }
         }
         if ((MapStyle)styleUi != map.style()) map.setStyle((MapStyle)styleUi);
         static const Overlay overlayList[] = {Overlay::None, Overlay::Plates, Overlay::Rock, Overlay::Earthquakes, Overlay::Resource,
@@ -1716,25 +1762,26 @@ int main() {
                 Vector2 p = toScreen(measurePts.back().first, measurePts.back().second);
                 std::string t1 = std::string("Distance: ") + formatKm(totalKm);
                 std::string t2 = TextFormat("On foot %.1f days, horse %.1f days, ship %.1f days", totalKm / 30, totalKm / 60, totalKm / 150);
-                int tw = std::max(MeasureText(t1.c_str(), 18), MeasureText(t2.c_str(), 16));
-                DrawRectangle((int)p.x + 12, (int)p.y - 50, tw + 20, 50, Fade(BLACK, 0.8f));
-                DrawText(t1.c_str(), (int)p.x + 22, (int)p.y - 44, 18, YELLOW);
-                DrawText(t2.c_str(), (int)p.x + 22, (int)p.y - 22, 16, RAYWHITE);
+                int tw = std::max(uiMeasure(t1.c_str(), 18), uiMeasure(t2.c_str(), 16));
+                theme::card(Rectangle{p.x + 12, p.y - 54, (float)tw + 20, 50});
+                uiText(t1.c_str(), (int)p.x + 22, (int)p.y - 48, 18, theme::kAccentHi);
+                uiText(t2.c_str(), (int)p.x + 22, (int)p.y - 26, 16, theme::kText);
             }
         }
         if (showCompass) drawCompass({panel.x + panel.width + 70, (float)sh - 150}, 42, map.style() == MapStyle::Fantasy);
         if (showTitle) {
             std::string t = nameBuf;
             for (char& ch : t) ch = (char)std::toupper((unsigned char)ch);
-            float fsz = 40, spacing = 10;
-            Vector2 ts = MeasureTextEx(GetFontDefault(), t.c_str(), fsz, spacing);
+            float fsz = 44, spacing = 8;
+            Font tf = fontFor(FontKind::Serif, fsz);
+            Vector2 ts = MeasureTextEx(tf, t.c_str(), fsz, spacing);
             float cx = (panel.x + panel.width + sw) / 2;
             bool fantasy = map.style() == MapStyle::Fantasy;
             Rectangle box{cx - ts.x / 2 - 30, 14, ts.x + 60, ts.y + 20};
             DrawRectangleRec(box, fantasy ? Color{238, 224, 186, 235} : Fade(BLACK, 0.55f));
             DrawRectangleLinesEx(box, 2, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
             DrawRectangleLinesEx({box.x + 5, box.y + 5, box.width - 10, box.height - 10}, 1, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
-            DrawTextEx(GetFontDefault(), t.c_str(), {cx - ts.x / 2, 24}, fsz, spacing, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
+            DrawTextEx(tf, t.c_str(), {cx - ts.x / 2, 24}, fsz, spacing, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
         }
         if (showMini && globeMini) {
             // orthographic globe centred on the view, redrawn on the CPU when the view moves
@@ -1768,7 +1815,7 @@ int main() {
             float vr = (float)std::min(gs / 2.0, (sh / view.pxPerDeg) / 180.0 * gs / 2);
             DrawCircleLines((int)(gr.x + gs / 2), (int)(gr.y + gs / 2), std::max(3.f, vr), YELLOW);
         } else if (showMini) {
-            DrawRectangle((int)miniRect.x - 3, (int)miniRect.y - 3, (int)miniRect.width + 6, (int)miniRect.height + 6, Fade(BLACK, 0.7f));
+            theme::card(Rectangle{miniRect.x - 4, miniRect.y - 4, miniRect.width + 8, miniRect.height + 8});
             map.drawMini(miniRect);
             float vw = (float)(sw / view.pxPerDeg / 360 * miniRect.width), vh = (float)(sh / view.pxPerDeg / 180 * miniRect.height);
             float vx = (float)(miniRect.x + (view.centerLon + 180) / 360 * miniRect.width - vw / 2);
@@ -1780,12 +1827,12 @@ int main() {
             EndScissorMode();
         }
         // ---- Readouts ----
-        const int fs = 18;
+        const int fs = 15;
         double kmPerPx = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
         const char* info = TextFormat("1 px = %s   Tiles %d   Drawing %d   %d FPS", formatKm(kmPerPx), map.cached(), map.pending(), GetFPS());
-        int iw = MeasureText(info, fs);
-        DrawRectangle(sw - iw - 30, 10, iw + 20, 32, Fade(BLACK, 0.55f));
-        DrawText(info, sw - iw - 20, 17, fs, RAYWHITE);
+        int iw = uiMeasure(info, fs);
+        theme::card(Rectangle{(float)sw - iw - 30, 10, (float)iw + 20, 28});
+        uiText(info, sw - iw - 20, 16, fs, theme::kMuted);
         if (hit) {
             double e = app.planet.elevation(hitDir, Planet::detailOctavesFor(std::max(0.0005, kmPerPx), R));
             int c = World::nearestCell(mLat, mLon);
@@ -1811,22 +1858,22 @@ int main() {
                     app.world.lakeType[c] == 1 ? "   Lake" : app.world.lakeType[c] == 2 ? "   Salt flat" :
                     app.world.discharge[c] > 40 ? TextFormat("   River flow %.0f m3/s", app.world.discharge[c]) : ""), clim};
             int tw = 0;
-            for (auto& s : lines) tw = std::max(tw, MeasureText(s.c_str(), fs));
-            int bh = 6 * 22 + 14;
-            DrawRectangle(sw - tw - 30, sh - bh - 10, tw + 20, bh, Fade(BLACK, 0.6f));
-            for (int i = 0; i < 6; i++) DrawText(lines[i].c_str(), sw - tw - 20, sh - bh - 3 + i * 22, fs, RAYWHITE);
+            for (auto& s : lines) tw = std::max(tw, uiMeasure(s.c_str(), fs));
+            int bh = 6 * 20 + 16;
+            theme::card(Rectangle{(float)sw - tw - 34, (float)sh - bh - 42, (float)tw + 24, (float)bh});
+            for (int i = 0; i < 6; i++) uiText(lines[i].c_str(), sw - tw - 22, sh - bh - 34 + i * 20, fs, i == 1 ? theme::kAccentHi : theme::kText);
         }
         if ((hoverEvent >= 0 || hoverPin >= 0) && hoverCity < 0 && hoverDeposit < 0) {
             std::string t1, t2;
             if (hoverPin >= 0) { const Article& a = app.doc.articles[hoverPin]; t1 = a.title; t2 = std::string(loreKindName(a.kind)) + " - click to read"; }
             else { const HistEvent& e = app.doc.events[hoverEvent]; t1 = TextFormat("%s (%d)", e.title.c_str(), e.year); t2 = e.text; }
             if (t2.size() > 80) t2 = t2.substr(0, 77) + "...";
-            int tw = std::max(MeasureText(t1.c_str(), 18), MeasureText(t2.c_str(), 16));
+            int tw = std::max(uiMeasure(t1.c_str(), 18), uiMeasure(t2.c_str(), 16));
             int bx = (int)mouse.x + 16, by = (int)mouse.y + 10;
             if (bx + tw + 20 > sw) bx = (int)mouse.x - tw - 36;
-            DrawRectangle(bx, by, tw + 20, 52, Fade(BLACK, 0.8f));
-            DrawText(t1.c_str(), bx + 10, by + 6, 18, YELLOW);
-            DrawText(t2.c_str(), bx + 10, by + 28, 16, RAYWHITE);
+            theme::card(Rectangle{(float)bx, (float)by, (float)(tw + 20), (float)(52)});
+            uiText(t1.c_str(), bx + 10, by + 6, 18, theme::kAccentHi);
+            uiText(t2.c_str(), bx + 10, by + 28, 16, theme::kText);
         }
         if (hoverCity >= 0 && hoverDeposit < 0) {
             const City& c = app.doc.cities[hoverCity];
@@ -1835,13 +1882,13 @@ int main() {
                 ? std::string(TextFormat("Population %.0f in %d (%d today)", app.doc.populationAt(c, year), year, c.population))
                 : std::string(TextFormat("Population %d", c.population));
             std::string t3 = c.nation >= 0 && c.nation < (int)app.doc.nations.size() ? app.doc.nations[c.nation].name : std::string("Independent");
-            int tw = std::max({MeasureText(t1.c_str(), 18), MeasureText(t2.c_str(), 18), MeasureText(t3.c_str(), 18)});
+            int tw = std::max({uiMeasure(t1.c_str(), 18), uiMeasure(t2.c_str(), 18), uiMeasure(t3.c_str(), 18)});
             int bx = (int)mouse.x + 16, by = (int)mouse.y + 10;
             if (bx + tw + 20 > sw) bx = (int)mouse.x - tw - 36;
-            DrawRectangle(bx, by, tw + 20, 3 * 22 + 12, Fade(BLACK, 0.75f));
-            DrawText(t1.c_str(), bx + 10, by + 6, 18, YELLOW);
-            DrawText(t2.c_str(), bx + 10, by + 28, 18, RAYWHITE);
-            DrawText(t3.c_str(), bx + 10, by + 50, 18, RAYWHITE);
+            theme::card(Rectangle{(float)bx, (float)by, (float)(tw + 20), (float)(3 * 22 + 12)});
+            uiText(t1.c_str(), bx + 10, by + 6, 18, theme::kAccentHi);
+            uiText(t2.c_str(), bx + 10, by + 28, 18, theme::kText);
+            uiText(t3.c_str(), bx + 10, by + 50, 18, theme::kText);
         }
         if (hoverDeposit >= 0) {
             const Deposit& dp = app.world.deposits[hoverDeposit];
@@ -1852,21 +1899,20 @@ int main() {
                                     : std::string(TextFormat("Grade: %.4g%%", dp.grade)),
                                 TextFormat("Depth: %.0f m", dp.depthM)};
             int tw = 0;
-            for (auto& x : t) tw = std::max(tw, MeasureText(x.c_str(), 18));
+            for (auto& x : t) tw = std::max(tw, uiMeasure(x.c_str(), 18));
             int bx = (int)mouse.x + 16, by = (int)mouse.y + 10;
             if (bx + tw + 20 > sw) bx = (int)mouse.x - tw - 36;
-            DrawRectangle(bx, by, tw + 20, 4 * 22 + 12, Fade(BLACK, 0.75f));
-            for (int i = 0; i < 4; i++) DrawText(t[i].c_str(), bx + 10, by + 6 + i * 22, 18, i == 0 ? YELLOW : RAYWHITE);
+            theme::card(Rectangle{(float)bx, (float)by, (float)(tw + 20), (float)(4 * 22 + 12)});
+            for (int i = 0; i < 4; i++) uiText(t[i].c_str(), bx + 10, by + 6 + i * 22, 18, i == 0 ? theme::kAccentHi : theme::kText);
         }
         drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
         if (!droppedPath.empty()) {
             Rectangle box{(float)sw / 2 - 300, (float)sh / 2 - 110, 600, 220};
             DrawRectangle(0, 0, sw, sh, Fade(BLACK, 0.45f));
-            DrawRectangleRec(box, Color{248, 248, 244, 255});
-            DrawRectangleLinesEx(box, 2, DARKGRAY);
-            DrawText("Use this image as...", (int)box.x + 20, (int)box.y + 16, 24, Color{40, 40, 40, 255});
-            DrawText(GetFileName(droppedPath.c_str()), (int)box.x + 20, (int)box.y + 50, 18, DARKGRAY);
-            DrawText("Images should be a whole-world map (twice as wide as tall). Dark = sea, bright = high land.", (int)box.x + 20, (int)box.y + 78, 15, GRAY);
+            theme::card(box, theme::kAccent);
+            uiText("Use this image as...", (int)box.x + 20, (int)box.y + 16, 24, theme::kText);
+            uiText(GetFileName(droppedPath.c_str()), (int)box.x + 20, (int)box.y + 50, 18, theme::kMuted);
+            uiText("Images should be a whole-world map (twice as wide as tall). Dark = sea, bright = high land.", (int)box.x + 20, (int)box.y + 78, 15, theme::kMuted);
             if (GuiButton(Rectangle{box.x + 20, box.y + 120, 270, 40}, "The land shape (regenerate)")) {
                 app.ui.importPath = droppedPath;
                 {   // match the ocean cover to the dark part of the image, so the coast follows the drawing
@@ -1895,12 +1941,11 @@ int main() {
         if (showStats) {
             Rectangle box{(float)sw / 2 - 470, 60, 940, (float)std::min(820, sh - 120)};
             DrawRectangle(0, 0, sw, sh, Fade(BLACK, 0.45f));
-            DrawRectangleRec(box, Color{248, 248, 244, 255});
-            DrawRectangleLinesEx(box, 2, DARKGRAY);
-            DrawText("World statistics", (int)box.x + 20, (int)box.y + 16, 26, Color{40, 40, 40, 255});
+            theme::card(box, theme::kAccent);
+            uiText("World statistics", (int)box.x + 20, (int)box.y + 16, 26, theme::kText);
             if (GuiButton(Rectangle{box.x + box.width - 110, box.y + 14, 90, 30}, "Close")) showStats = false;
             int x0 = (int)box.x + 20, y = (int)box.y + 60;
-            auto text = [&](const char* t, int x, int yy, int fs = 18) { DrawText(t, x, yy, fs, Color{40, 40, 40, 255}); };
+            auto text = [&](const char* t, int x, int yy, int fs = 18) { uiText(t, x, yy, fs, theme::kText); };
             text(TextFormat("Land %.1f%%   Highest %.0f m   Deepest %.0f m   Area %.1fM km2", app.stats.landPercent, app.stats.highestM,
                             app.stats.deepestM, app.stats.areaMkm2), x0, y);
             y += 26;
@@ -1921,8 +1966,8 @@ int main() {
                 double f = landA > 0 ? bArea[b] / landA : 0;
                 unsigned char rgb[3]; biomeColor((Biome)b, rgb);
                 DrawRectangle(x0 + 190, y + 2, (int)(f * 600), 14, Color{rgb[0], rgb[1], rgb[2], 255});
-                DrawText(biomeName((Biome)b), x0, y, 15, DARKGRAY);
-                DrawText(TextFormat("%.1f%%", f * 100), x0 + 196 + (int)(f * 600), y, 15, DARKGRAY);
+                uiText(biomeName((Biome)b), x0, y, 15, theme::kMuted);
+                uiText(TextFormat("%.1f%%", f * 100), x0 + 196 + (int)(f * 600), y, 15, theme::kMuted);
                 y += 19;
             }
             (void)by0;
@@ -1939,8 +1984,8 @@ int main() {
                 for (int k = 0; k < (int)ord.size() && k < 8 && y < box.y + box.height - 30; k++) {
                     const Nation& n = app.doc.nations[ord[k]];
                     DrawRectangle(x0 + 190, y + 2, (int)(500.0 * pop[ord[k]] / maxP), 14, Color{n.r, n.g, n.b, 255});
-                    DrawText(n.name.c_str(), x0, y, 15, DARKGRAY);
-                    DrawText(TextFormat("%lld people, %.0fk km2", pop[ord[k]], area[ord[k]] / 1000), x0 + 196 + (int)(500.0 * pop[ord[k]] / maxP), y, 15, DARKGRAY);
+                    uiText(n.name.c_str(), x0, y, 15, theme::kMuted);
+                    uiText(TextFormat("%lld people, %.0fk km2", pop[ord[k]], area[ord[k]] / 1000), x0 + 196 + (int)(500.0 * pop[ord[k]] / maxP), y, 15, theme::kMuted);
                     y += 19;
                 }
             }
@@ -1967,21 +2012,39 @@ int main() {
             };
             int n = (int)(sizeof(help) / sizeof(help[0]));
             Rectangle box{(float)sw / 2 - 430, (float)sh / 2 - n * 13.f - 20, 860, n * 26.f + 40};
-            DrawRectangleRec(box, Fade(BLACK, 0.88f));
-            DrawRectangleLinesEx(box, 2, YELLOW);
-            for (int i = 0; i < n; i++) DrawText(help[i], (int)box.x + 24, (int)box.y + 20 + i * 26, i == 0 ? 22 : 18, i == 0 ? YELLOW : RAYWHITE);
+            DrawRectangle(0, 0, sw, sh, Fade(BLACK, 0.45f));
+            theme::card(box, theme::kAccent);
+            for (int i = 0; i < n; i++) uiText(help[i], (int)box.x + 24, (int)box.y + 20 + i * 26, i == 0 ? 22 : 17, i == 0 ? theme::kAccentHi : theme::kText);
         }
         if (pendingExport > 0) {
-            DrawRectangle(sw / 2 - 160, sh / 2 - 30, 320, 60, Fade(BLACK, 0.8f));
-            DrawText("Exporting...", sw / 2 - MeasureText("Exporting...", 24) / 2, sh / 2 - 12, 24, RAYWHITE);
+            theme::card(Rectangle{(float)sw / 2 - 160, (float)sh / 2 - 30, 320, 60}, theme::kAccent);
+            uiText("Exporting...", sw / 2 - uiMeasure("Exporting...", 24) / 2, sh / 2 - 12, 24, theme::kText);
         }
         if (GetTime() - statusTime < 6) {
-            int tw = MeasureText(status.c_str(), 20);
-            DrawRectangle(sw / 2 - tw / 2 - 14, 54, tw + 28, 36, Fade(BLACK, 0.75f));
-            DrawText(status.c_str(), sw / 2 - tw / 2, 62, 20, YELLOW);
+            int tw = uiMeasure(status.c_str(), 20);
+            float cx = (panel.x + panel.width + sw) / 2;
+            theme::card(Rectangle{cx - tw / 2 - 16, 50, (float)tw + 32, 38}, theme::kAccent);
+            uiText(status.c_str(), (int)(cx - tw / 2), 59, 20, theme::kAccentHi);
         }
-        DrawText("Scroll: zoom   Right/middle-drag or WASD: move", (int)(panel.x + panel.width) + 24, sh - 28, 16, Fade(th.text, 0.8f));
+        {
+            // What can I do right now? One line of help for the current tool, plus where the mouse is.
+            std::string hint = "Scroll to zoom   \xE2\x80\xA2   Right-drag or WASD to move   \xE2\x80\xA2   F1 for help";
+            if (tab == TabSculpt && tool > 0) hint = "Left-drag to paint   \xE2\x80\xA2   [ and ] change brush size   \xE2\x80\xA2   Ctrl+Z undo   \xE2\x80\xA2   Right-drag to move";
+            else if (paintingTerritory) hint = "Left-drag to paint this nation's territory   \xE2\x80\xA2   Right-drag to move";
+            else if (placingCity) hint = "Click on land to found a city";
+            else if (placingEvent) hint = "Click the map where the event happened";
+            else if (pinningLore) hint = "Click the map to pin this article";
+            else if (measuring) hint = "Click to add measuring points   \xE2\x80\xA2   Right-click to clear";
+            else if (relPick) hint = "Click another nation to set the relation";
+            else if (tab == TabTrade) hint = "Click a city to start a route   \xE2\x80\xA2   Click a route to edit it   \xE2\x80\xA2   Right-drag to move";
+            char right[96] = "";
+            if (hit) snprintf(right, sizeof right, "%.2f\xC2\xB0%c  %.2f\xC2\xB0%c", std::fabs(mLat), mLat >= 0 ? 'N' : 'S', std::fabs(mLon), mLon >= 0 ? 'E' : 'W');
+            theme::statusBar(Rectangle{panel.x + panel.width, (float)sh - 30, (float)sw - panel.x - panel.width, 30}, hint.c_str(), right);
+        }
         EndDrawing();
+#ifdef WB_SHOTS
+        if (++shotFrames == (getenv("WB_FRAMES") ? atoi(getenv("WB_FRAMES")) : 30)) { TakeScreenshot(getenv("WB_SHOT") ? getenv("WB_SHOT") : "shot.png"); break; }
+#endif
         typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
                  loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
 

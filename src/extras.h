@@ -1,5 +1,6 @@
 #pragma once
 #include "raylib.h"
+#include "fonts.h"
 #include "document.h"
 #include <cmath>
 #include <string>
@@ -54,5 +55,5 @@ inline void drawCompass(Vector2 c, float r, bool fantasy) {
         DrawTriangle(tip, c, l, k % 2 ? ink : fill);
         DrawTriangleLines(tip, rr, l, ink);
     }
-    DrawText("N", (int)c.x - MeasureText("N", (int)(r * 0.4f)) / 2, (int)(c.y - r * 1.38f), (int)(r * 0.4f), ink);
+    uiText("N", (int)c.x - uiMeasure("N", (int)(r * 0.4f)) / 2, (int)(c.y - r * 1.38f), (int)(r * 0.4f), ink);
 }

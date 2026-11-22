@@ -1,4 +1,5 @@
 #include "cityeditor.h"
+#include "fonts.h"
 #include "raygui.h"
 #include "ui.h"
 #include <algorithm>
@@ -487,10 +488,10 @@ bool CityEditor::frame(const Planet& planet, const World& world, Document& doc) 
         DrawCircleV(p, 10, i == landmarkSel_ ? YELLOW : Color{30, 30, 30, 230});
         DrawCircleV(p, 8, Color{250, 245, 230, 255});
         const char* sy = sym[std::min((int)l.type, 11)];
-        DrawText(sy, (int)p.x - MeasureText(sy, 14) / 2, (int)p.y - 7, 14, Color{40, 30, 20, 255});
+        uiText(sy, (int)p.x - uiMeasure(sy, 14) / 2, (int)p.y - 7, 14, Color{40, 30, 20, 255});
         if (showLabels_) {
-            DrawText(l.name.c_str(), (int)p.x + 13, (int)p.y - 7, 16, BLACK);
-            DrawText(l.name.c_str(), (int)p.x + 12, (int)p.y - 8, 16, RAYWHITE);
+            uiText(l.name.c_str(), (int)p.x + 13, (int)p.y - 7, 16, BLACK);
+            uiText(l.name.c_str(), (int)p.x + 12, (int)p.y - 8, 16, RAYWHITE);
         }
     }
     if (tool_ == 1) {
@@ -503,7 +504,7 @@ bool CityEditor::frame(const Planet& planet, const World& world, Document& doc) 
         for (double m : {1.0, 2.0, 5.0}) if (m * mag <= target) nice = m * mag;
         int len = (int)(nice * zoom_), x = (int)(panel.x + panel.width) + 24, y = sh - 40;
         DrawRectangle(x, y, len, 4, RAYWHITE);
-        DrawText(nice >= 1000 ? TextFormat("%.0f km", nice / 1000) : TextFormat("%.0f m", nice), x, y - 24, 18, RAYWHITE);
+        uiText(nice >= 1000 ? TextFormat("%.0f km", nice / 1000) : TextFormat("%.0f m", nice), x, y - 24, 18, RAYWHITE);
     }
 
     // ---- panel ----
@@ -563,7 +564,7 @@ bool CityEditor::frame(const Planet& planet, const World& world, Document& doc) 
         int col = (d - 1) % 2, row = (d - 1) / 2;
         float x = L.x + col * L.w / 2, y = L.y + row * 20;
         DrawRectangle((int)x, (int)y + 3, 14, 14, kDistrictCol[d]);
-        DrawText(districtName((District)d), (int)x + 20, (int)y + 2, 15, DARKGRAY);
+        uiText(districtName((District)d), (int)x + 20, (int)y + 2, 15, DARKGRAY);
     }
     EndDrawing();
 

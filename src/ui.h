@@ -1,43 +1,100 @@
 #pragma once
 #include "raylib.h"
+#include "fonts.h"
 #include "raygui.h"
 #include <string>
 #include <vector>
+#include <cstring>
+#include <cctype>
 
 // Tiny helper for stacking raygui controls down the side panel.
+// Labels of the form "Name: value" show the value right-aligned in a brighter colour.
 struct Layout {
     float x, y, w;
-    void label(const char* t) { GuiLabel(Rectangle{x, y, w, 22}, t); y += 24; }
-    void heading(const char* t) { y += 6; GuiLabel(Rectangle{x, y, w, 22}, t); y += 26; }
-    void slider(float* v, float mn, float mx) { GuiSliderBar(Rectangle{x, y, w, 18}, NULL, NULL, v, mn, mx); y += 26; }
-    bool button(const char* t, float h = 30) { bool r = GuiButton(Rectangle{x, y, w, h}, t); y += h + 8; return r; }
-    void check(const char* t, bool* v) { GuiCheckBox(Rectangle{x, y, 20, 20}, t, v); y += 28; }
-    void legend(Color c, const char* t) {
-        DrawRectangle((int)x, (int)y + 3, 16, 16, c);
-        DrawRectangleLines((int)x, (int)y + 3, 16, 16, DARKGRAY);
-        GuiLabel(Rectangle{x + 24, y, w - 24, 22}, t);
+    const char* nextTip = nullptr;
+    void tip(const char* t) { nextTip = t; }
+    void applyTip() { GuiSetTooltip(nextTip); nextTip = nullptr; }
+    void label(const char* t) {
+        const char* colon = strstr(t, ": ");
+        if (colon && !strstr(colon + 2, ": ")) {
+            std::string name(t, colon - t);
+            drawTextK(FontKind::Ui, name.c_str(), {x, y + 2}, 16, Color{190, 198, 212, 255});
+            const char* v = colon + 2;
+            Vector2 ts = measureTextK(FontKind::UiBold, v, 16);
+            drawTextK(FontKind::UiBold, v, {x + w - ts.x, y + 2}, 16, Color{240, 230, 210, 255});
+        } else drawTextK(FontKind::Ui, t, {x, y + 2}, 16, Color{210, 216, 226, 255});
+        y += 23;
+    }
+    void heading(const char* t) {
+        y += 12;
+        std::string up = t;
+        for (char& c : up) c = (char)toupper((unsigned char)c);
+        Vector2 ts = measureTextK(FontKind::UiBold, up.c_str(), 13);
+        // letter-spaced small caps
+        float cx = x;
+        for (char c : up) {
+            char b[2] = {c, 0};
+            drawTextK(FontKind::UiBold, b, {cx, y}, 13, Color{232, 178, 84, 255});
+            cx += measureTextK(FontKind::UiBold, b, 13).x + 1.6f;
+        }
+        (void)ts;
+        DrawLineEx({cx + 8, y + 7.5f}, {x + w, y + 7.5f}, 1, Color{52, 60, 78, 255});
         y += 24;
     }
+    void slider(float* v, float mn, float mx) {
+        applyTip();
+        GuiSliderBar(Rectangle{x, y + 2, w, 12}, NULL, NULL, v, mn, mx);
+        // knob
+        float f = (mx > mn) ? (*v - mn) / (mx - mn) : 0;
+        f = f < 0 ? 0 : f > 1 ? 1 : f;
+        DrawCircleV({x + f * w, y + 8}, 7, Color{246, 202, 118, 255});
+        DrawCircleLinesV({x + f * w, y + 8}, 7, Color{25, 20, 12, 255});
+        y += 24;
+    }
+    bool button(const char* t, float h = 30) { applyTip(); bool r = GuiButton(Rectangle{x, y, w, h}, t); y += h + 8; return r; }
+    // A filled, brass-coloured button for the main action of a section
+    bool primary(const char* t, float h = 36) {
+        Rectangle r{x, y, w, h};
+        Vector2 m = GetMousePosition();
+        bool hov = CheckCollisionPointRec(m, r) && !GuiIsLocked();
+        DrawRectangleRounded(r, 0.2f, 6, hov ? Color{246, 202, 118, 255} : Color{232, 178, 84, 255});
+        Vector2 ts = measureTextK(FontKind::UiBold, t, 17);
+        drawTextK(FontKind::UiBold, t, {x + w / 2 - ts.x / 2, y + h / 2 - ts.y / 2}, 17, Color{30, 22, 10, 255});
+        y += h + 10;
+        return hov && IsMouseButtonReleased(MOUSE_BUTTON_LEFT);
+    }
+    void check(const char* t, bool* v) { applyTip(); GuiCheckBox(Rectangle{x, y, 18, 18}, t, v); y += 26; }
+    void legend(Color c, const char* t) {
+        DrawRectangleRounded({x, y + 3, 16, 16}, 0.3f, 4, c);
+        drawTextK(FontKind::Ui, t, {x + 24, y + 2}, 15, Color{210, 216, 226, 255});
+        y += 22;
+    }
     void note(const char* t) {
-        // simple word wrap for help text
-        int fs = 16, maxW = (int)w;
-        const char* p = t;
-        char line[256];
-        while (*p) {
-            int n = 0, lastSpace = -1;
-            while (p[n] && n < 255) {
-                line[n] = p[n]; line[n + 1] = 0;
-                if (p[n] == ' ') lastSpace = n;
-                if (MeasureText(line, fs) > maxW && lastSpace > 0) { n = lastSpace; break; }
-                n++;
-            }
-            line[n] = 0;
-            DrawText(line, (int)x, (int)y, fs, GRAY);
-            y += 20;
-            p += n;
-            while (*p == ' ') p++;
+        int fs = 14;
+        for (const std::string& line : wrapLines(t, (int)w, fs)) {
+            drawTextK(FontKind::Ui, line.c_str(), {x, y}, (float)fs, Color{142, 152, 170, 255});
+            y += 18;
         }
-        y += 4;
+        y += 6;
+    }
+    static std::vector<std::string> wrapLines(const char* t, int width, int fs) {
+        std::vector<std::string> out;
+        std::string line, word;
+        auto flush = [&]() {
+            std::string trial = line.empty() ? word : line + " " + word;
+            if (!line.empty() && measureTextK(FontKind::Ui, trial.c_str(), (float)fs).x > width) { out.push_back(line); line = word; }
+            else line = trial;
+            word.clear();
+        };
+        for (const char* p = t; ; p++) {
+            if (*p == ' ' || *p == 0 || *p == '\n') {
+                if (!word.empty()) flush();
+                if (*p == '\n') { out.push_back(line); line.clear(); }
+                if (*p == 0) break;
+            } else word += *p;
+        }
+        if (!line.empty()) out.push_back(line);
+        return out;
     }
 };
 
@@ -55,7 +112,7 @@ inline std::vector<std::string> wrapText(const std::string& text, int width, int
             size_t sp = para.find(' ', p);
             std::string word = para.substr(p, sp == std::string::npos ? std::string::npos : sp - p + 1);
             std::string trial = line + word;
-            if (!line.empty() && MeasureText(trial.c_str(), fs) > width) { out.push_back(line); line = word; }
+            if (!line.empty() && uiMeasure(trial.c_str(), fs) > width) { out.push_back(line); line = word; }
             else line = trial;
             p = sp == std::string::npos ? para.size() : sp + 1;
         }
@@ -103,14 +160,14 @@ inline void textArea(Rectangle r, std::string& text, bool& editing, int& scroll)
     DrawRectangleRec(r, editing ? Color{255, 255, 250, 255} : Color{245, 245, 245, 255});
     DrawRectangleLinesEx(r, editing ? 2.f : 1.f, editing ? Color{60, 120, 200, 255} : GRAY);
     for (int i = 0; i < visible && scroll + i < (int)lines.size(); i++)
-        DrawText(lines[scroll + i].c_str(), (int)r.x + 8, (int)r.y + 6 + i * lh, fs, Color{30, 30, 30, 255});
+        uiText(lines[scroll + i].c_str(), (int)r.x + 8, (int)r.y + 6 + i * lh, fs, Color{30, 30, 30, 255});
     if (editing && ((int)(GetTime() * 2) % 2 == 0)) {
         int li = std::max(0, (int)lines.size() - 1);
         if (li - scroll >= 0 && li - scroll < visible) {
-            int x = (int)r.x + 8 + (lines.empty() ? 0 : MeasureText(lines[li].c_str(), fs));
+            int x = (int)r.x + 8 + (lines.empty() ? 0 : uiMeasure(lines[li].c_str(), fs));
             if (!text.empty() && text.back() == '\n') { li++; x = (int)r.x + 8; }
             if (li - scroll < visible) DrawRectangle(x + 1, (int)r.y + 6 + (li - scroll) * lh, 2, fs, Color{30, 30, 30, 255});
         }
     }
-    if (text.empty() && !editing) DrawText("Click to write...", (int)r.x + 8, (int)r.y + 6, fs, GRAY);
+    if (text.empty() && !editing) uiText("Click to write...", (int)r.x + 8, (int)r.y + 6, fs, GRAY);
 }
