@@ -327,6 +327,7 @@ int main() {
     int lastNationSel = -2, lastCitySel = -2;
     bool showRoutes = true, showEvents = true, showPins = true, typing = false;
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
+    bool showIntro = !FileExists("worldbuilder-intro-seen.txt");
     bool showStats = false, showHelp = false, showHex = false, globeMini = false, rotateLabels = true;
     Texture2D globeTex{}; bool haveGlobe = false; double globeLat = 999, globeLon = 999, globeTime = -10;
     std::vector<unsigned char> globePx(200 * 200 * 4, 0);
@@ -394,7 +395,24 @@ int main() {
         const Rectangle railRect = {0, 0, 64, (float)sh};
         const Rectangle panel = {64, 0, 350, (float)sh};
         const Vector2 mouse = GetMousePosition();
-        const bool overPanel = mouse.x < panel.x + panel.width;
+        // Quick layer chips along the top of the map
+        static const struct { const char* name; int overlay; } kChips[] = {
+            {"Terrain", 0}, {"Plates", 1}, {"Temperature", 5}, {"Rain", 6}, {"Biomes", 7},
+            {"Wind", 8}, {"Currents", 9}, {"Nations", 10}, {"Population", 11}};
+        const int chipCount = (int)(sizeof(kChips) / sizeof(kChips[0]));
+        Rectangle chipRects[16];
+        Rectangle chipBar{panel.x + panel.width + 12, 10, 0, 28};
+        {
+            float x = chipBar.x;
+            for (int i = 0; i < chipCount; i++) {
+                float w = measureTextK(FontKind::Ui, kChips[i].name, 14).x + 22;
+                chipRects[i] = Rectangle{x, chipBar.y, w, 28};
+                x += w + 4;
+            }
+            chipBar.width = x - chipBar.x + 150;   // room for the month stepper
+        }
+        const bool overChips = CheckCollisionPointRec(mouse, chipBar);
+        const bool overPanel = mouse.x < panel.x + panel.width || overChips;
         const double minZoom = sh / 180.0, maxZoom = TileMap::TILE / 90.0 * (1 << TileMap::MAX_LEVEL) * 2;
         const bool sculptTab = (tab == TabSculpt);
         const int activeTool = sculptTab ? tool : 0;
@@ -404,7 +422,7 @@ int main() {
         const bool pinningLore = tab == TabLore && loreTool == 1 && loreSel >= 0;
         const bool measuring = tab == TabMap && measureTool == 1;
         const bool anyTool = activeTool > 0 || paintingTerritory || placingCity || placingEvent || pinningLore || measuring || relPick;
-        const Rectangle miniRect{(float)sw - 270, 50, 256, 128};
+        const Rectangle miniRect{(float)sw - 270, 50, 256, 128};   // below the layer chips
         const bool overMini = showMini && CheckCollisionPointRec(mouse, miniRect);
         app.applyYear();
         const int year = app.doc.currentYear;
@@ -905,6 +923,38 @@ int main() {
             DrawEllipseLines((int)mouse.x, (int)mouse.y, rx, ry, map.style() == MapStyle::Fantasy ? Color{60, 40, 25, 255} : RAYWHITE);
         }
 
+        // ---- Layer chips ----
+        {
+            for (int i = 0; i < chipCount; i++) {
+                Rectangle r = chipRects[i];
+                bool on = overlayUi == kChips[i].overlay, hov = CheckCollisionPointRec(mouse, r);
+                DrawRectangleRounded(r, 0.5f, 8, on ? theme::kAccent : hov ? Color{44, 52, 70, 235} : Color{20, 24, 33, 225});
+                DrawRectangleRoundedLinesEx(r, 0.5f, 8, 1, on ? theme::kAccentHi : Color{60, 70, 92, 255});
+                Vector2 ts = measureTextK(on ? FontKind::UiBold : FontKind::Ui, kChips[i].name, 14);
+                drawTextK(on ? FontKind::UiBold : FontKind::Ui, kChips[i].name, {r.x + r.width / 2 - ts.x / 2, r.y + 6}, 14,
+                          on ? Color{30, 22, 10, 255} : theme::kText);
+                if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) overlayUi = on ? 0 : kChips[i].overlay;
+            }
+            // month stepper for seasonal layers
+            if (overlayUi == 5 || overlayUi == 6 || overlayUi == 8 || overlayUi == 14) {
+                float x = chipRects[chipCount - 1].x + chipRects[chipCount - 1].width + 12;
+                Rectangle box{x, chipBar.y, 140, 28};
+                DrawRectangleRounded(box, 0.5f, 8, Color{20, 24, 33, 225});
+                DrawRectangleRoundedLinesEx(box, 0.5f, 8, 1, Color{60, 70, 92, 255});
+                int mo = (int)std::round(monthUi);
+                const char* mn = mo >= 12 ? "Whole year" : kMonths[mo];
+                Vector2 ts = measureTextK(FontKind::Ui, mn, 14);
+                drawTextK(FontKind::Ui, mn, {box.x + 70 - ts.x / 2, box.y + 6}, 14, theme::kText);
+                Rectangle lb{box.x, box.y, 26, 28}, rb{box.x + 114, box.y, 26, 28};
+                drawTextK(FontKind::UiBold, "<", {lb.x + 9, lb.y + 5}, 16, CheckCollisionPointRec(mouse, lb) ? theme::kAccentHi : theme::kMuted);
+                drawTextK(FontKind::UiBold, ">", {rb.x + 9, rb.y + 5}, 16, CheckCollisionPointRec(mouse, rb) ? theme::kAccentHi : theme::kMuted);
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    if (CheckCollisionPointRec(mouse, lb)) monthUi = (float)((mo + 12) % 13);
+                    if (CheckCollisionPointRec(mouse, rb)) monthUi = (float)((mo + 1) % 13);
+                }
+            }
+        }
+
         // ---- Panel ----
         {
             int clicked = theme::rail(railRect, tab);
@@ -968,6 +1018,7 @@ int main() {
             L.label(TextFormat("Area: %.1fM km2   Plates: %zu", app.stats.areaMkm2, app.world.plates.size()));
             L.label(TextFormat("Volcanoes: %zu   Rivers: %zu", app.world.volcanoes.size(), app.world.rivers.size()));
             if (L.button("Show world statistics")) showStats = true;
+            if (L.button("Getting-started guide")) showIntro = true;
             L.note("Press F1 any time for help and keyboard shortcuts.");
             if (randomClicked) { app.ui.seed = GetRandomValue(0, 999999); genClicked = true; }
             if (genClicked) {
@@ -1831,8 +1882,7 @@ int main() {
         double kmPerPx = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
         const char* info = TextFormat("1 px = %s   Tiles %d   Drawing %d   %d FPS", formatKm(kmPerPx), map.cached(), map.pending(), GetFPS());
         int iw = uiMeasure(info, fs);
-        theme::card(Rectangle{(float)sw - iw - 30, 10, (float)iw + 20, 28});
-        uiText(info, sw - iw - 20, 16, fs, theme::kMuted);
+        (void)iw;   // shown in the status bar
         if (hit) {
             double e = app.planet.elevation(hitDir, Planet::detailOctavesFor(std::max(0.0005, kmPerPx), R));
             int c = World::nearestCell(mLat, mLon);
@@ -2016,6 +2066,35 @@ int main() {
             theme::card(box, theme::kAccent);
             for (int i = 0; i < n; i++) uiText(help[i], (int)box.x + 24, (int)box.y + 20 + i * 26, i == 0 ? 22 : 17, i == 0 ? theme::kAccentHi : theme::kText);
         }
+        if (showIntro) {
+            // First-run guide: the order things are usually built in, with buttons that jump to each tab
+            static const struct { int tab; const char* title; const char* text; } steps[] = {
+                {TabWorld, "Shape the planet", "Pick a template or set size, oceans and plates, then Generate."},
+                {TabSculpt, "Sculpt the land", "Paint continents, raise mountains, carve seas and coastlines."},
+                {TabClimate, "Check the climate", "Seasons, winds, rain and currents follow from your terrain."},
+                {TabNations, "Add peoples and nations", "Generate cultures, nations and cities, or place your own."},
+                {TabTrade, "Trade and history", "Simulate trade routes and add events that change the map."},
+            };
+            float cw = 560, chh = 120 + 5 * 64;
+            float cx = (panel.x + panel.width + sw) / 2 - cw / 2, cy = sh / 2.f - chh / 2;
+            DrawRectangle((int)(panel.x + panel.width), 0, sw, sh, Fade(BLACK, 0.35f));
+            theme::card(Rectangle{cx, cy, cw, chh}, theme::kAccent);
+            drawTextK(FontKind::Serif, "Welcome to Worldbuilder", {cx + 28, cy + 20}, 34, theme::kAccentHi);
+            drawTextK(FontKind::Ui, "A good order to build a world in. You can come back to any step later.", {cx + 30, cy + 62}, 15, theme::kMuted);
+            for (int i = 0; i < 5; i++) {
+                float y = cy + 98 + i * 64;
+                DrawCircleV({cx + 46, y + 20}, 16, Color{40, 46, 62, 255});
+                DrawCircleLinesV({cx + 46, y + 20}, 16, theme::kAccent);
+                char num[4]; snprintf(num, sizeof num, "%d", i + 1);
+                Vector2 nt = measureTextK(FontKind::UiBold, num, 16);
+                drawTextK(FontKind::UiBold, num, {cx + 46 - nt.x / 2, y + 11}, 16, theme::kAccentHi);
+                drawTextK(FontKind::UiBold, steps[i].title, {cx + 76, y + 2}, 18, theme::kText);
+                drawTextK(FontKind::Ui, steps[i].text, {cx + 76, y + 25}, 14, theme::kMuted);
+                if (GuiButton(Rectangle{cx + cw - 92, y + 6, 66, 28}, "Go")) { tab = steps[i].tab; showIntro = false; }
+            }
+            if (GuiButton(Rectangle{cx + cw - 180, cy + chh - 46, 154, 32}, "Got it")) showIntro = false;
+            if (!showIntro) SaveFileText("worldbuilder-intro-seen.txt", (char*)"The getting-started guide has been shown. Delete this file to see it again.\n");
+        }
         if (pendingExport > 0) {
             theme::card(Rectangle{(float)sw / 2 - 160, (float)sh / 2 - 30, 320, 60}, theme::kAccent);
             uiText("Exporting...", sw / 2 - uiMeasure("Exporting...", 24) / 2, sh / 2 - 12, 24, theme::kText);
@@ -2037,8 +2116,10 @@ int main() {
             else if (measuring) hint = "Click to add measuring points   \xE2\x80\xA2   Right-click to clear";
             else if (relPick) hint = "Click another nation to set the relation";
             else if (tab == TabTrade) hint = "Click a city to start a route   \xE2\x80\xA2   Click a route to edit it   \xE2\x80\xA2   Right-drag to move";
-            char right[96] = "";
-            if (hit) snprintf(right, sizeof right, "%.2f\xC2\xB0%c  %.2f\xC2\xB0%c", std::fabs(mLat), mLat >= 0 ? 'N' : 'S', std::fabs(mLon), mLon >= 0 ? 'E' : 'W');
+            char right[200] = "";
+            double kmPx = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
+            if (hit) snprintf(right, sizeof right, "%.2f\xC2\xB0%c  %.2f\xC2\xB0%c     1 px = %s     %d FPS", std::fabs(mLat), mLat >= 0 ? 'N' : 'S', std::fabs(mLon), mLon >= 0 ? 'E' : 'W', formatKm(kmPx), GetFPS());
+            else snprintf(right, sizeof right, "1 px = %s     %d FPS", formatKm(kmPx), GetFPS());
             theme::statusBar(Rectangle{panel.x + panel.width, (float)sh - 30, (float)sw - panel.x - panel.width, 30}, hint.c_str(), right);
         }
         EndDrawing();
