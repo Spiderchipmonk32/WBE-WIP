@@ -4,6 +4,13 @@ Overnight build log. Newest entries at the top of each section. Each feature is 
 and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest run → Artifacts).
 
 ## Done
+- **Move tectonic plates** (World tab > Move plates): drag a plate's dot to move it, drag its arrow to change direction and speed, set it continental or oceanic, or merge it away. Drift time opens new oceans where plates part and raises ranges where they meet.
+- **Better brushes** (Sculpt tab): Draw land/sea shape (lasso a continent and it fills with natural coastline, shelf and drainage), Make land/sea only raise/lower past a chosen height, Mountains and Hills brushes, edge and roughness sliders, Shift reverses.
+- **City details**: what a city sells and buys (with tonnes and main partners), trade balance, what it makes, climate, rivers/ports and nearby resources; a card beside the selected city on the map.
+- **Realistic populations by era**: cities sized from each nation's farmland, the era's town-dwelling share and a rank-size rule (ancient capitals ~100k, medieval up to ~0.5M, modern megacities 20-35M).
+- **Editable trade routes**: draw routes through waypoints (follow terrain or straight lines), drag ends/waypoints, add/remove points, edit cargo, rename, reverse, delete; turn simulated routes into your own or hide them. Travel days per leg.
+- **Wind and current flow**: animated streaks over any layer with a month picker; wind and current shown on hover.
+- **New look**: Fira Sans interface font and serif map labels, dark theme, icon rail, scrolling panel with headings, layer buttons along the top of the map, status bar hints, getting-started guide.
 - **Glacial fjords**: on cold coasts, big glacier-fed valleys are carved below sea level so the sea floods them.
 - **Globe minimap**: tick "Globe minimap" in the Map tab to see a shaded globe centred on where you're looking, with your view circled.
 - **Rotated nation labels**: long, thin nations get their names tilted and spaced out along their shape (can be turned off in the Map tab).
