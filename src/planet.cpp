@@ -125,15 +125,177 @@ int Planet::detailOctavesFor(double spacingKm, double radiusKm) {
     return std::max(1, std::min(22, o));
 }
 
+namespace {
+const Simplex3 kBrushNoise(911u);
+// fractal noise on the sphere, roughly -1..1; scaleKm is the size of the biggest bumps
+double brushFbm(const Vec3d& d, double planetR, double scaleKm, int oct = 3) {
+    double k = planetR / std::max(0.5, scaleKm), sum = 0, amp = 1, norm = 0;
+    for (int o = 0; o < oct; o++) {
+        sum += amp * kBrushNoise(d.x * k + 31.7 * o, d.y * k - 12.1 * o, d.z * k + 5.3 * o);
+        norm += amp; amp *= 0.5; k *= 2.03;
+    }
+    return sum / norm * 1.6;
+}
+// Natural-looking ground for new land: broad swells plus fine hills, scaled with roughness
+double fillRelief(const Vec3d& d, double planetR, double scaleKm, double rough, double baseM) {
+    double broad = 0.5 + 0.5 * brushFbm(d, planetR, scaleKm, 3);            // lowlands and uplands
+    double hills = 1 - std::fabs(brushFbm(d, planetR, std::max(4.0, scaleKm * 0.25), 5));
+    double fine = brushFbm(d, planetR, std::max(2.0, scaleKm * 0.06), 5);
+    double amp = 120 + 0.35 * std::max(0.0, baseM);
+    // hills mostly on the uplands, plains in the lowlands
+    double up = smoothstepd(0.35, 0.85, broad);
+    return (0.25 + rough) * (amp * 3.2 * broad * broad + amp * 2.2 * hills * hills * hills * up + amp * 0.25 * fine);
+}
+// ridged noise 0..1 (sharp crests), for mountain ranges
+double brushRidge(const Vec3d& d, double planetR, double scaleKm) {
+    double k = planetR / std::max(0.5, scaleKm), sum = 0, amp = 1, norm = 0;
+    for (int o = 0; o < 4; o++) {
+        double n = 1 - std::fabs(kBrushNoise(d.x * k - 7.7 * o, d.y * k + 3.1 * o, d.z * k + 11.9 * o));
+        sum += amp * n * n;
+        norm += amp; amp *= 0.5; k *= 2.1;
+    }
+    return sum / norm;
+}
+}
+
+// Lasso shapes: signed distance (km) from the drawn outline, positive inside
+static double polygonDistance(const Stroke& s, const Vec3d& d, double R, double& size, double& edge) {
+    double c = d.dot(s.dir);
+    const std::vector<double>& v = *s.poly;
+    const int n = (int)v.size() / 2 - 1;   // last pair: (size, edge width)
+    size = v[2 * n]; edge = v[2 * n + 1];
+    if (c < 0.05) return -1e9;
+    Vec3d p = d * (1.0 / c) - s.dir;   // gnomonic projection onto the touching plane
+    double x = p.dot(s.e1) * R, y = p.dot(s.e2) * R;
+    if (s.noise > 0) {   // wiggle the coast with fractal noise (domain warp): bays, capes and islands
+        double amp = s.noise * 0.11 * size;
+        x += amp * brushFbm(d, R, size * 0.16, 6);
+        y += amp * brushFbm(Vec3d{d.y, d.z, d.x}, R, size * 0.16, 6);
+    }
+    bool inside = false;
+    double best = 1e30;
+    for (int i = 0, j = n - 1; i < n; j = i++) {
+        double xi = v[2 * i], yi = v[2 * i + 1], xj = v[2 * j], yj = v[2 * j + 1];
+        if (((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+        double dx = xj - xi, dy = yj - yi, L2 = dx * dx + dy * dy;
+        double t = L2 > 0 ? clampd(((x - xi) * dx + (y - yi) * dy) / L2, 0, 1) : 0;
+        double ex = xi + t * dx - x, ey = yi + t * dy - y;
+        best = std::min(best, ex * ex + ey * ey);
+    }
+    double dist = std::sqrt(best);
+    return inside ? dist : -dist;
+}
+
+bool Planet::makePolygonStroke(Stroke& s, const std::vector<Vec3d>& pts, double R) {
+    if (pts.size() < 3) return false;
+    Vec3d c{0, 0, 0};
+    for (auto& p : pts) c = c + p;
+    if (c.length() < 1e-9) return false;
+    c = c.normalized();
+    s.dir = c;
+    s.e1 = anyPerp(c).normalized();
+    s.e2 = c.cross(s.e1).normalized();
+    auto v = std::make_shared<std::vector<double>>();
+    double maxAng = 0, minX = 1e30, maxX = -1e30, minY = 1e30, maxY = -1e30;
+    for (auto& p : pts) {
+        double cc = p.dot(c);
+        if (cc < 0.2) return false;   // too big to draw as one shape
+        Vec3d q = p * (1.0 / cc) - c;
+        double x = q.dot(s.e1) * R, y = q.dot(s.e2) * R;
+        v->push_back(x); v->push_back(y);
+        minX = std::min(minX, x); maxX = std::max(maxX, x); minY = std::min(minY, y); maxY = std::max(maxY, y);
+        maxAng = std::max(maxAng, angleBetween(p, c));
+    }
+    double size = std::max(maxX - minX, maxY - minY);
+    if (size < 1) return false;
+    double edge = 4 + (1 - clampd(s.hardness, 0, 1)) * 0.06 * size;
+    v->push_back(size); v->push_back(edge);
+    s.poly = v;
+    s.radiusKm = maxAng * R + s.noise * 0.11 * size * 1.7 + (s.type == BrushType::LandFill ? 0.05 * size + 60 : 0) + 10;
+    s.angRadius = std::min(kPi * 0.95, s.radiusKm / R);
+    s.cosRadius = std::cos(s.angRadius);
+    return true;
+}
+
+bool Planet::addLasso(BrushType type, const std::vector<std::pair<double, double>>& latLon, double targetM, double hardness, double noise) {
+    std::vector<Vec3d> pts;
+    for (auto& ll : latLon) {
+        double la = ll.first * kPi / 180, lo = ll.second * kPi / 180;
+        pts.push_back(Vec3d{std::cos(la) * std::sin(lo), std::sin(la), std::cos(la) * std::cos(lo)});
+    }
+    Stroke s{};
+    s.type = type; s.amount = 1; s.targetM = targetM + settings_.seaLevel; s.hardness = hardness; s.noise = noise;
+    if (!makePolygonStroke(s, pts, settings_.radiusKm)) return false;
+    s.group = ++group_;
+    strokes_.push_back(s);
+    return true;
+}
+
 double Planet::applyStroke(const Stroke& s, const Vec3d& d, double h) {
     double c = d.dot(s.dir);
     if (c <= s.cosRadius) return h;
+    const double R = s.radiusKm / std::max(1e-9, s.angRadius);
+    if (s.poly) {
+        double size, edge;
+        double dist = polygonDistance(s, d, R, size, edge);
+        if (dist < -1e8) return h;
+        if (s.type == BrushType::LandFill) {
+            if (dist > 0) {
+                double f = smoothstepd(0, edge, dist);
+                // ground rises gently inland so rivers can drain to the sea
+                double inland = smoothstepd(0, 0.35 * size, dist);
+                double target = s.targetM * (0.4 + 0.9 * inland) + fillRelief(d, R, std::max(20.0, size * 0.2), s.noise, s.targetM) * (0.35 + 0.65 * inland);
+                if (h < target) h += (target - h) * f;
+                // the coast itself sits a little inside the line: shallow water right at the edge
+                if (f < 1 && h < 0) h = std::max(h, -120.0 * (1 - f));
+            } else {
+                // continental shelf, then a slope down to the old sea floor
+                double shelf = 0.04 * size + 40;
+                double t = -dist / shelf;
+                if (t < 1) {
+                    double target = -60 - 140 * t - 2600 * t * t * t;
+                    if (h < target) h += (target - h) * (1 - smoothstepd(0.6, 1.0, t));
+                }
+            }
+        } else if (s.type == BrushType::SeaFill && dist > 0) {
+            double f = smoothstepd(0, edge, dist);
+            double target = s.targetM - s.noise * std::fabs(s.targetM) * 0.3 * (0.5 + 0.5 * brushFbm(d, R, std::max(20.0, size * 0.15), 3));
+            if (h > target) h += (target - h) * f;
+        }
+        return clampd(h, kMinElev, kMaxElev);
+    }
     double ang = std::acos(std::min(1.0, c));
-    double f = 0.5 * (1 + std::cos(kPi * ang / s.angRadius));
+    double t = ang / s.angRadius;                       // 0 at the centre, 1 at the edge
+    if (s.noise > 0) {
+        // ragged edge: the brush reaches less far in some directions (only shrinks, so no cut-off circle)
+        double n = brushFbm(d, R, s.radiusKm * 0.45, 4);
+        t *= 1 + s.noise * 0.6 * (0.5 + 0.5 * n);
+        if (t >= 1) return h;
+    }
+    double t0 = clampd(s.hardness, 0, 1) * 0.85;
+    double f = t <= t0 ? 1.0 : 0.5 * (1 + std::cos(kPi * (t - t0) / (1 - t0)));
     switch (s.type) {
         case BrushType::Raise: h += s.amount * f; break;
         case BrushType::Lower: h -= s.amount * f; break;
-        default:               h += (s.targetM - h) * std::min(1.0, s.amount * f); break;
+        case BrushType::Mountains: {
+            double r = brushRidge(d, R, std::max(8.0, s.radiusKm * 0.4));
+            h += s.amount * f * (0.3 + 0.7 * r * r);
+            break;
+        }
+        case BrushType::Rough: h += s.amount * f * brushFbm(d, R, std::max(5.0, s.radiusKm * 0.25), 4); break;
+        case BrushType::LandFill: {
+            // a gentle dome under each dab, so painted land drains outwards instead of filling with lakes
+            double dome = 0.45 + 0.85 * (1 - t);
+            double target = s.targetM * dome + fillRelief(d, R, std::max(10.0, s.radiusKm * 0.6), s.noise, s.targetM) * dome;
+            if (h < target) h += (target - h) * std::min(1.0, s.amount * f);
+            break;
+        }
+        case BrushType::SeaFill: {
+            double target = s.targetM - s.noise * std::fabs(s.targetM) * 0.3 * (0.5 + 0.5 * brushFbm(d, R, std::max(10.0, s.radiusKm * 0.6), 3));
+            if (h > target) h += (target - h) * std::min(1.0, s.amount * f);
+            break;
+        }
+        default: h += (s.targetM - h) * std::min(1.0, s.amount * f); break;
     }
     return clampd(h, kMinElev, kMaxElev);
 }
@@ -180,15 +342,15 @@ void Planet::beginStrokeGroup(BrushType type, const Vec3d& dir, double radiusKm,
     }
 }
 
-void Planet::addDab(BrushType type, const Vec3d& dir, double radiusKm, double amount) {
+void Planet::addDab(BrushType type, const Vec3d& dir, double radiusKm, double amount, double hardness, double noise) {
     if (amount <= 0) return;
     double R = settings_.radiusKm;
     // Merge with the previous dab if the brush hasn't moved much, to keep edit lists short.
     if (!strokes_.empty()) {
         Stroke& last = strokes_.back();
         if (last.group == group_ && last.type == type && std::fabs(last.radiusKm - radiusKm) < 1e-9 &&
-            angleBetween(last.dir, dir) * R < radiusKm * 0.15) {
-            if (type == BrushType::Raise || type == BrushType::Lower) last.amount += amount;
+            last.hardness == hardness && last.noise == noise && angleBetween(last.dir, dir) * R < radiusKm * 0.15) {
+            if (additive(type)) last.amount += amount;
             else last.amount = 1 - (1 - last.amount) * (1 - std::min(1.0, amount));
             return;
         }
@@ -199,9 +361,11 @@ void Planet::addDab(BrushType type, const Vec3d& dir, double radiusKm, double am
     s.angRadius = std::min(kPi * 0.95, radiusKm / R);
     s.cosRadius = std::cos(s.angRadius);
     s.type = type;
-    s.amount = (type == BrushType::Raise || type == BrushType::Lower) ? amount : std::min(1.0, amount);
+    s.amount = additive(type) ? amount : std::min(1.0, amount);
     s.targetM = groupTarget_;
     s.group = group_;
+    s.hardness = hardness;
+    s.noise = noise;
     strokes_.push_back(s);
 }
 

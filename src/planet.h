@@ -4,6 +4,7 @@
 #include <vector>
 #include <utility>
 #include <string>
+#include <memory>
 
 // Everything about the planet that doesn't depend on graphics.
 // Elevation is a pure function of direction, so it can be sampled at any resolution:
@@ -25,7 +26,10 @@ struct PlanetSettings {
     std::string importPath;       // image used as the land shape (empty = none)
 };
 
-enum class BrushType { Raise = 1, Lower = 2, Smooth = 3, Flatten = 4 };
+// Raise/Lower add or remove height; Smooth/Flatten blend towards a height; Mountains raise ridged
+// peaks; Rough adds hills and hollows; LandFill raises anything below a height up to it (leaving
+// higher ground alone); SeaFill lowers anything above a depth down to it.
+enum class BrushType { Raise = 1, Lower = 2, Smooth = 3, Flatten = 4, Mountains = 5, Rough = 6, LandFill = 7, SeaFill = 8 };
 
 // One brush dab, stored as an edit layer and applied on top of the generated terrain.
 struct Stroke {
@@ -37,7 +41,16 @@ struct Stroke {
     double amount;      // metres for raise/lower, 0..1 blend for smooth/flatten
     double targetM;     // target height for smooth/flatten
     int group;          // one mouse drag = one group (one undo step)
+    double hardness = 0;   // 0 soft edge .. 1 nearly hard edge
+    double noise = 0;      // 0..1: ragged edge and uneven surface (natural coastlines)
+    // Lasso fills: a polygon (x, y in km on the plane touching the sphere at dir, axes e1/e2).
+    // radiusKm then covers the whole shape.
+    std::shared_ptr<const std::vector<double>> poly;
+    Vec3d e1{1, 0, 0}, e2{0, 1, 0};
 };
+
+// Brushes that add metres (the rest blend towards a height)
+inline bool additive(BrushType t) { return t == BrushType::Raise || t == BrushType::Lower || t == BrushType::Mountains || t == BrushType::Rough; }
 
 struct PlanetStats { double landPercent = 0, highestM = 0, deepestM = 0, areaMkm2 = 0; };
 
@@ -59,7 +72,12 @@ public:
     void beginStrokeGroup(BrushType type, const Vec3d& dir, double radiusKm, double fixedTarget = -1e9);
     // One-click landforms: 0 crater, 1 volcano, 2 mesa
     void addStamp(int kind, const Vec3d& dir, double radiusKm);
-    void addDab(BrushType type, const Vec3d& dir, double radiusKm, double amount);
+    // Fill a shape drawn on the map (lat/lon points) with land (LandFill) or sea (SeaFill)
+    // up/down to targetM, with a soft, optionally ragged edge. Returns false if the shape is too small.
+    bool addLasso(BrushType type, const std::vector<std::pair<double, double>>& latLon, double targetM, double hardness, double noise);
+    // Builds a lasso stroke's geometry from its points (used by addLasso)
+    static bool makePolygonStroke(Stroke& s, const std::vector<Vec3d>& pts, double planetR);
+    void addDab(BrushType type, const Vec3d& dir, double radiusKm, double amount, double hardness = 0, double noise = 0);
     // Removes the last group; returns the areas it touched so they can be redrawn.
     std::vector<std::pair<Vec3d, double>> undo();
     void strokesNear(const Vec3d& dir, double angRadius, std::vector<int>& out) const;

@@ -424,6 +424,8 @@ int main() {
     auto cleanList = [](std::string t) { for (char& ch : t) if (ch == ';' || ch == '\n') ch = ','; return t; };
     int climateViewUi = -1;
     float brushT = 0.80f, strengthT = 0.851f;
+    float hardnessUi = 0.35f, roughUi = 0.45f, landHeightT = 0.35f, seaDepthT = 0.3f;
+    std::vector<std::pair<double, double>> lassoPts; bool lassoing = false;
 
 #ifdef WB_SHOTS
     // Developer hook: render a few frames on a chosen tab, save a screenshot and quit (used for automated UI checks)
@@ -458,6 +460,38 @@ int main() {
                 myRouteSel = 0;
             }
         }
+    }
+    if (const char* lz = getenv("WB_LASSO")) {   // test shapes for the brushes, around the view centre
+        double cl = view.centerLat, co = view.centerLon;
+        // find open ocean for the test
+        for (double la = -40; la <= 40 && app.planet.elevation(TileMap::dirFromLatLon(cl, co), 3) > -2500; la += 5)
+            for (double lo = -180; lo < 180; lo += 5) {
+                bool ok = true;
+                for (int k = 0; k < 16 && ok; k++) { double a = k * kPi / 8; if (app.planet.elevation(TileMap::dirFromLatLon(la + 14 * std::sin(a), lo + 20 * std::cos(a)), 3) > -1500) ok = false; }
+                if (ok) { cl = la; co = lo; break; }
+            }
+        view.centerLat = cl; view.centerLon = co;
+        std::vector<std::pair<double, double>> pts;
+        for (int k = 0; k < 60; k++) {
+            double a = k * 2 * kPi / 60, r = 9 + 4 * std::sin(3 * a) + 1.5 * std::cos(7 * a);
+            pts.push_back({cl + r * std::sin(a), co + 1.4 * r * std::cos(a)});
+        }
+        app.planet.addLasso(BrushType::LandFill, pts, 150, 0.4, atof(lz));
+        if (getenv("WB_BRUSHES")) {
+        app.planet.beginStrokeGroup(BrushType::Raise, TileMap::dirFromLatLon(cl, co), 300);
+        for (int k = 0; k < 40; k++) {
+            double t = k / 39.0;
+            app.planet.addDab(BrushType::Mountains, TileMap::dirFromLatLon(cl - 4 + 8 * t, co - 8 + 12 * t), 260, 400, 0.3, 0.4);
+        }
+        app.planet.beginStrokeGroup(BrushType::LandFill, TileMap::dirFromLatLon(cl + 14, co + 20), 300, 120);
+        for (int k = 0; k < 30; k++) {
+            double t = k / 29.0;
+            app.planet.addDab(BrushType::LandFill, TileMap::dirFromLatLon(cl + 14 - 6 * t, co + 20 + 8 * std::sin(t * 5)), 350, 1, 0.35, 0.6);
+        }
+        }
+        map.invalidateAll();
+        if (getenv("WB_CLIMATE")) app.recalcClimate();
+        printf("LASSO strokes=%zu elev centre=%.0f\n", app.planet.strokes().size(), app.planet.elevation(TileMap::dirFromLatLon(cl, co), 6));
     }
     if (const char* c = getenv("WB_CITY")) {
         citySel = atoi(c);
@@ -768,20 +802,60 @@ int main() {
         };
 
         // ---- Sculpting ----
-        if (activeTool >= 7 && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        // tools: 0 pan, 1 raise, 2 lower, 3 smooth, 4 flatten, 5 make land, 6 make sea, 7-9 stamps,
+        //        10 mountain range, 11 hills, 12 draw land (lasso), 13 draw sea (lasso)
+        const double landHeightM = 20 * std::pow(150.0, (double)landHeightT);   // 20 .. 3000 m
+        const double seaDepthM = 30 * std::pow(200.0, (double)seaDepthT);       // 30 .. 6000 m
+        const bool invert = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+        auto brushFor = [&](int t, double& target) {
+            target = -1e9;
+            switch (t) {
+                case 1: return invert ? BrushType::Lower : BrushType::Raise;
+                case 2: return invert ? BrushType::Raise : BrushType::Lower;
+                case 3: return BrushType::Smooth;
+                case 4: return BrushType::Flatten;
+                case 5: if (invert) { target = -seaDepthM; return BrushType::SeaFill; } target = landHeightM; return BrushType::LandFill;
+                case 6: if (invert) { target = landHeightM; return BrushType::LandFill; } target = -seaDepthM; return BrushType::SeaFill;
+                case 10: return invert ? BrushType::Lower : BrushType::Mountains;
+                case 11: return BrushType::Rough;
+                default: return BrushType::Raise;
+            }
+        };
+        const bool lassoTool = activeTool == 12 || activeTool == 13;
+        if (activeTool >= 7 && activeTool <= 9 && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             app.planet.addStamp(activeTool - 7, hitDir, brushKm);
             map.invalidate(hitDir, brushKm * 1.6);
             app.stats = app.planet.computeStats();
-        } else if (activeTool > 0 && activeTool < 7 && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        } else if (lassoTool && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            lassoing = true; lassoPts.clear(); lassoPts.push_back({mLat, mLon});
+        } else if (activeTool > 0 && (activeTool < 7 || activeTool == 10 || activeTool == 11) && hit && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             painting = true;
-            if (activeTool == 5) app.planet.beginStrokeGroup(BrushType::Flatten, hitDir, brushKm, 60);
-            else if (activeTool == 6) app.planet.beginStrokeGroup(BrushType::Flatten, hitDir, brushKm, -250);
-            else app.planet.beginStrokeGroup((BrushType)activeTool, hitDir, brushKm);
+            double target; BrushType bt = brushFor(activeTool, target);
+            app.planet.beginStrokeGroup(bt == BrushType::Mountains || bt == BrushType::Rough ? BrushType::Raise : bt, hitDir, brushKm, target);
+        }
+        if (lassoing) {
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT) && hit) {
+                // keep points a few pixels apart; longitudes stay continuous across the date line
+                double plon = lassoPts.back().second, lon = plon + std::remainder(mLon - plon, 360.0);
+                Vector2 a = toScreen(lassoPts.back().first, lassoPts.back().second);
+                if (std::hypot(a.x - mouse.x, a.y - mouse.y) > 5) lassoPts.push_back({mLat, lon});
+            }
+            if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+                lassoing = false;
+                bool sea = (activeTool == 13) != invert;
+                if (lassoPts.size() >= 3 && app.planet.addLasso(sea ? BrushType::SeaFill : BrushType::LandFill, lassoPts, sea ? -seaDepthM : landHeightM, hardnessUi, roughUi)) {
+                    const Stroke& st = app.planet.strokes().back();
+                    map.invalidate(st.dir, st.radiusKm * 1.05);
+                    app.stats = app.planet.computeStats();
+                    setStatus(sea ? "Sea drawn - Ctrl+Z to undo" : "Land drawn - Ctrl+Z to undo");
+                } else setStatus("Draw a bigger shape (and less than a hemisphere)");
+                lassoPts.clear();
+            }
         }
         if (painting && IsMouseButtonDown(MOUSE_BUTTON_LEFT) && hit) {
-            BrushType bt = activeTool >= 4 ? BrushType::Flatten : (BrushType)activeTool;
-            double amount = (bt == BrushType::Raise || bt == BrushType::Lower) ? strength * dt : std::min(1.0, dt * 3 * strength / 1000);
-            app.planet.addDab(bt, hitDir, brushKm, amount);
+            double target; BrushType bt = brushFor(activeTool, target);
+            double amount = additive(bt) ? strength * dt * (bt == BrushType::Mountains ? 1.6 : 1.0) : std::min(1.0, dt * 3 * strength / 1000);
+            app.planet.addDab(bt, hitDir, brushKm, amount, hardnessUi, bt == BrushType::Smooth || bt == BrushType::Flatten ? 0 : roughUi);
             map.invalidate(hitDir, brushKm * 1.1);
         }
         if (painting && !IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
@@ -1199,11 +1273,31 @@ int main() {
                 if (dd < bestD) { bestD = dd; hoverDeposit = i; }
             }
         }
-        if (hit && (activeTool > 0 || paintingTerritory)) {
+        if (hit && ((activeTool > 0 && activeTool != 12 && activeTool != 13) || paintingTerritory)) {
             double kmPerDeg = 111.195 * R / 6371.0;
             float ry = (float)(brushKm / kmPerDeg * view.pxPerDeg);
             float rx = (float)(ry / std::max(0.02, std::cos(mLat * kPi / 180)));
-            DrawEllipseLines((int)mouse.x, (int)mouse.y, rx, ry, map.style() == MapStyle::Fantasy ? Color{60, 40, 25, 255} : RAYWHITE);
+            Color bc = map.style() == MapStyle::Fantasy ? Color{60, 40, 25, 255} : RAYWHITE;
+            DrawEllipseLines((int)mouse.x, (int)mouse.y, rx, ry, bc);
+            DrawEllipseLines((int)mouse.x, (int)mouse.y, rx + 1, ry + 1, Fade(BLACK, 0.4f));
+            if (sculptTab && activeTool != 7 && activeTool != 8 && activeTool != 9) {   // inner ring: where the brush is at full strength
+                float k = hardnessUi * 0.85f;
+                if (k > 0.05f) DrawEllipseLines((int)mouse.x, (int)mouse.y, rx * k, ry * k, Fade(bc, 0.5f));
+                const char* nm = activeTool == 5 ? (invert ? "sea" : "land") : activeTool == 6 ? (invert ? "land" : "sea") : activeTool == 1 ? (invert ? "lower" : "raise")
+                               : activeTool == 2 ? (invert ? "raise" : "lower") : activeTool == 10 ? (invert ? "lower" : "mountains") : nullptr;
+                if (nm) drawTextK(FontKind::UiBold, nm, {mouse.x + rx * 0.72f + 6, mouse.y + ry * 0.72f + 2}, 13, bc);
+            }
+        }
+        if (lassoing && lassoPts.size() > 1) {
+            bool sea = (activeTool == 13) != (IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT));
+            Color lc = sea ? Color{120, 200, 255, 255} : Color{140, 230, 120, 255};
+            Vector2 first = toScreen(lassoPts[0].first, lassoPts[0].second), prev = first;
+            for (size_t k = 1; k < lassoPts.size(); k++) {
+                Vector2 p = toScreen(lassoPts[k].first, lassoPts[k].second);
+                if (std::fabs(p.x - prev.x) < sw / 2) { DrawLineEx(prev, p, 4, Fade(BLACK, 0.5f)); DrawLineEx(prev, p, 2, lc); }
+                prev = p;
+            }
+            if (std::fabs(prev.x - first.x) < sw / 2) DrawLineEx(prev, first, 1.5f, Fade(lc, 0.6f));   // closing edge
         }
 
         // ---- Layer chips ----
@@ -2329,15 +2423,61 @@ int main() {
                 L.note("Write articles about places, people, factions, religions, creatures and items. Pin them to the map, and link them with [[Title]].");
             }
         } else if (tab == 2) {
-            L.heading("SCULPT");
-            GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 12) / 4, 28}, "Pan;Raise;Lower;Smooth\nFlatten;Make land;Make sea;Crater\nVolcano;Mesa", &tool);
-            L.y += 98;
-            if (tool >= 7) L.note("Click the map to stamp it. The brush radius sets its size.");
-            L.label(TextFormat("Brush radius: %s", formatKm(brushKm))); L.slider(&brushT, 0, 1);
-            L.label(TextFormat("Strength: %.1f m/s", strength)); L.slider(&strengthT, 0, 1);
-            if (L.button("Undo (Ctrl+Z)", 30)) doUndo();
-            if (L.button("Update climate for new terrain", 30)) app.recalcClimate();
-            L.note("Left-drag on the map to sculpt. Keys 1-5 switch tools, [ and ] resize the brush.");
+            // tool buttons in groups, with the active one highlighted
+            auto toolRow = [&](const char* const* names, const int* ids, int n) {
+                float bw = (L.w - 6 * (n - 1)) / n;
+                for (int i = 0; i < n; i++) {
+                    Rectangle r{L.x + i * (bw + 6), L.y, bw, 30};
+                    bool on = tool == ids[i];
+                    if (on) GuiSetState(STATE_PRESSED);
+                    if (GuiButton(r, names[i])) tool = ids[i];
+                    GuiSetState(STATE_NORMAL);
+                }
+                L.y += 36;
+            };
+            L.heading("LAND AND SEA");
+            { const char* n[] = {"Make land", "Make sea"}; int id[] = {5, 6}; toolRow(n, id, 2); }
+            { const char* n[] = {"Draw land shape", "Draw sea shape"}; int id[] = {12, 13}; toolRow(n, id, 2); }
+            L.heading("SHAPE");
+            { const char* n[] = {"Raise", "Lower", "Mountains"}; int id[] = {1, 2, 10}; toolRow(n, id, 3); }
+            { const char* n[] = {"Hills", "Smooth", "Flatten"}; int id[] = {11, 3, 4}; toolRow(n, id, 3); }
+            L.heading("STAMPS");
+            { const char* n[] = {"Crater", "Volcano", "Mesa", "Pan"}; int id[] = {7, 8, 9, 0}; toolRow(n, id, 4); }
+            static const char* help[14] = {
+                "Pan: drag to move the map.",
+                "Raise land where you paint. Hold Shift to lower.",
+                "Lower land where you paint. Hold Shift to raise.",
+                "Smooth out bumps and sharp edges.",
+                "Flatten to the height where you start.",
+                "Paint new land up to the land height. Higher ground is left alone, and Roughness gives natural coasts. Shift paints sea.",
+                "Paint sea down to the sea depth. Lower ground is left alone. Shift paints land.",
+                "Click to stamp a meteor crater.", "Click to stamp a volcano.", "Click to stamp a flat-topped mesa.",
+                "Paint a mountain range: drag along where the ridges should run. Shift lowers.",
+                "Add rolling hills and hollows.",
+                "Drag a loop round the shape of a continent or island; it fills with land when you let go. Shift makes sea.",
+                "Drag a loop round a sea, bay or lake; it floods when you let go. Shift makes land."};
+            L.note(help[std::max(0, std::min(13, tool))]);
+            L.heading("BRUSH");
+            if (tool != 12 && tool != 13) { L.label(TextFormat("Size: %s", formatKm(brushKm))); L.slider(&brushT, 0, 1); }
+            if (tool == 1 || tool == 2 || tool == 10 || tool == 11 || tool == 3 || tool == 4 || tool == 5 || tool == 6) {
+                L.label(TextFormat("Strength: %.0f%%", strengthT * 100)); L.slider(&strengthT, 0, 1);
+            }
+            if (tool != 0 && (tool < 7 || tool > 9)) {
+                L.label(TextFormat("Edge: %s", hardnessUi < 0.33f ? "soft" : hardnessUi < 0.66f ? "medium" : "hard")); L.slider(&hardnessUi, 0, 1);
+            }
+            if (tool == 1 || tool == 2 || tool == 5 || tool == 6 || tool == 10 || tool == 11 || tool == 12 || tool == 13) {
+                L.label(TextFormat("Roughness: %.0f%%", roughUi * 100)); L.slider(&roughUi, 0, 1);
+            }
+            if (tool == 5 || tool == 12 || tool == 6 || tool == 13) {
+                L.label(TextFormat("Land height: %.0f m", landHeightM)); L.slider(&landHeightT, 0, 1);
+                L.label(TextFormat("Sea depth: %.0f m", seaDepthM)); L.slider(&seaDepthT, 0, 1);
+            }
+            L.heading("AFTER SCULPTING");
+            float bw2 = (L.w - 8) / 2;
+            if (GuiButton(Rectangle{L.x, L.y, bw2, 30}, "Undo (Ctrl+Z)")) doUndo();
+            if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 30}, "Update climate")) app.recalcClimate();
+            L.y += 38;
+            L.note("Rivers, climate and resources follow the terrain when you press Update climate. [ and ] resize the brush.");
         }
         if (pendingGoodDropdown.width > 0) {
             if (addGoodOpen) GuiUnlock();
@@ -2730,7 +2870,9 @@ int main() {
         {
             // What can I do right now? One line of help for the current tool, plus where the mouse is.
             std::string hint = "Scroll to zoom   \xE2\x80\xA2   Right-drag or WASD to move   \xE2\x80\xA2   F1 for help";
-            if (tab == TabSculpt && tool > 0) hint = "Left-drag to paint   \xE2\x80\xA2   [ and ] change brush size   \xE2\x80\xA2   Ctrl+Z undo   \xE2\x80\xA2   Right-drag to move";
+            if (tab == TabSculpt && (tool == 12 || tool == 13)) hint = "Drag a loop round the shape   \xE2\x80\xA2   it fills when you let go   \xE2\x80\xA2   Shift swaps land and sea   \xE2\x80\xA2   Ctrl+Z undo";
+            else if (tab == TabSculpt && tool > 0) hint = "Left-drag to paint   \xE2\x80\xA2   Shift reverses   \xE2\x80\xA2   [ and ] change brush size   \xE2\x80\xA2   Ctrl+Z undo   \xE2\x80\xA2   Right-drag to move";
+            else if (false) hint = "Left-drag to paint   \xE2\x80\xA2   [ and ] change brush size   \xE2\x80\xA2   Ctrl+Z undo   \xE2\x80\xA2   Right-drag to move";
             else if (paintingTerritory) hint = "Left-drag to paint this nation's territory   \xE2\x80\xA2   Right-drag to move";
             else if (placingCity) hint = "Click on land to found a city";
             else if (placingEvent) hint = "Click the map where the event happened";

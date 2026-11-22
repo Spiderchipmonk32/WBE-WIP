@@ -75,7 +75,7 @@ void World::generateRivers() {
     for (int i = 0; i < N; i++) {
         if (elev[i] <= 0) continue;
         double depth = level[i] - elev[i];
-        if (depth > 4) {
+        if (depth > 12) {
             double P = rainfallYear.empty() ? 600 : rainfallYear[i];
             double T = tempYear.empty() ? 10 : tempYear[i];
             bool wet = P > 450 || discharge[i] > 400 || T < 2;   // cold basins hold (frozen) lakes

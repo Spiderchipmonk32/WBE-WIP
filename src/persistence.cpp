@@ -63,9 +63,16 @@ bool saveWorld(const std::string& path, const SaveData& d, std::string& err) {
           << "erosion " << s.erosion << "\n";
         if (!s.importPath.empty()) o << "import " << quote(s.importPath) << "\n";
         o << "view " << d.viewLon << " " << d.viewLat << " " << d.viewZoom << " " << d.style << "\n";
-        for (const Stroke& st : d.strokes)
+        for (const Stroke& st : d.strokes) {
             o << "stroke " << (int)st.type << " " << st.dir.x << " " << st.dir.y << " " << st.dir.z << " " << st.radiusKm << " "
-              << st.amount << " " << st.targetM << " " << st.group << "\n";
+              << st.amount << " " << st.targetM << " " << st.group << " " << st.hardness << " " << st.noise << "\n";
+            if (st.poly) {
+                o << "strokepoly " << st.radiusKm << " " << st.e1.x << " " << st.e1.y << " " << st.e1.z << " " << st.e2.x << " " << st.e2.y << " " << st.e2.z
+                  << " " << st.poly->size();
+                for (double v : *st.poly) o << " " << v;
+                o << "\n";
+            }
+        }
         writeDocument(o, d.doc);
         o << "END\n";
         if (!o) { err = "Error while writing " + path; return false; }
@@ -104,10 +111,26 @@ bool loadWorld(const std::string& path, SaveData& d, std::string& err) {
             Stroke st{}; int t;
             ls >> t >> st.dir.x >> st.dir.y >> st.dir.z >> st.radiusKm >> st.amount >> st.targetM >> st.group;
             st.type = (BrushType)t;
+            bool okLine = (bool)ls;
+            double hd, nz;
+            if (ls >> hd >> nz) { st.hardness = hd; st.noise = nz; }   // newer files
+            ls.clear();
+            if (!okLine) ls.setstate(std::ios::failbit);
             st.dir = st.dir.normalized();
             st.angRadius = std::min(kPi * 0.95, st.radiusKm / std::max(1.0, (double)s.radiusKm));
             st.cosRadius = std::cos(st.angRadius);
             if (ls) d.strokes.push_back(st);
+        } else if (key == "strokepoly" && !d.strokes.empty()) {
+            Stroke& st = d.strokes.back();
+            size_t n = 0; double rk;
+            ls >> rk >> st.e1.x >> st.e1.y >> st.e1.z >> st.e2.x >> st.e2.y >> st.e2.z >> n;
+            auto v = std::make_shared<std::vector<double>>();
+            for (size_t k = 0; k < n && ls; k++) { double x; ls >> x; v->push_back(x); }
+            if (ls && v->size() >= 8) {
+                st.poly = v; st.radiusKm = rk;
+                st.angRadius = std::min(kPi * 0.95, rk / std::max(1.0, (double)s.radiusKm));
+                st.cosRadius = std::cos(st.angRadius);
+            }
         } else if (key == "END") break;
         else readDocumentLine(key, ls, line, d.doc);   // unknown keys are ignored, for forward compatibility
     }
