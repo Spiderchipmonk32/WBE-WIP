@@ -94,6 +94,7 @@ void writeDocument(std::ostream& o, const Document& doc) {
           << (c.userMade ? 1 : 0) << " " << c.look << " " << c.travelTo << " " << c.travelT << " " << quote(c.name) << " " << quote(c.title) << " "
           << quote(c.house) << " " << quote(c.occupation) << " " << quote(c.appearance) << " " << quote(c.notes) << "\n";
         if (!c.traits.empty()) { o << "chartraits " << c.id; for (int t : c.traits) o << " " << t; o << "\n"; }
+        if (c.stats.size() == 9) { o << "charstats " << c.id; for (int v : c.stats) o << " " << v; o << " " << quote(c.klass) << "\n"; }
         for (const LifeEvent& e : c.log) o << "charlog " << c.id << " " << e.year << " " << e.month << " " << quote(e.text) << "\n";
     }
     for (const Link& l : doc.links)
@@ -240,6 +241,12 @@ bool readDocumentLine(const std::string& key, std::istringstream& in, const std:
         unquote(line, pos, c.occupation); unquote(line, pos, c.appearance); unquote(line, pos, c.notes);
         doc.characters.push_back(c);
         doc.nextCharId = std::max(doc.nextCharId, c.id + 1);
+        return true;
+    }
+    if (key == "charstats") {
+        int id; in >> id; Character* c = doc.character(id);
+        std::vector<int> v(9); for (int& x : v) in >> x;
+        if (c && in) { c->stats = v; size_t pos = (size_t)in.tellg(); if (pos != std::string::npos) unquote(line, pos, c->klass); }
         return true;
     }
     if (key == "chartraits") { int id, t; in >> id; Character* c = doc.character(id); while (c && in >> t) c->traits.push_back(t); return true; }

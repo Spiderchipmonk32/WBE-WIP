@@ -13,6 +13,7 @@
 #include "sim.h"
 #include "codex.h"
 #include "timeline.h"
+#include "language.h"
 #include <ctime>
 #include "characters.h"
 #include "persistence.h"
@@ -488,6 +489,7 @@ int main() {
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
     CharUI charUi;
     CodexUI codexUi;
+    char translateBuf[256] = "The king's road leads to the sea"; bool translateEdit = false;
     TimelineView timeline; bool timelineOpen = false; char ageBuf[64] = "The Age of Kings"; bool ageEdit = false; int ageStart = -500, ageEnd = 0; bool ageStartEdit = false, ageEndEdit = false;
     bool calendarTyping = false;
     bool camFollow = true, showNews = true; int followShow = -1; double lastTerritoryPaint = 0;
@@ -620,6 +622,7 @@ int main() {
         if (!app.doc.characters.empty()) charUi.sel = app.doc.characters[atoi(getenv("WB_CHARS"))].id;
         if (getenv("WB_WEBFOCUS")) web.focusOn({EntKind::Character, charUi.sel});
         if (getenv("WB_FAMILY")) web.familyMode = true;
+        if (getenv("WB_CULTURE")) cultureSel = 0;
         printf("CHARS %zu links %zu\n", app.doc.characters.size(), app.doc.links.size());
     }
     if (const char* ys = getenv("WB_SIM")) {
@@ -2013,6 +2016,36 @@ int main() {
                     setStatus(t);
                 }
                 L.y += 36;
+                // ---- their language ----
+                drawTextK(FontKind::UiBold, ("The " + c.name + " tongue").c_str(), {L.x, L.y}, 15, theme::kTeal);
+                L.y += 22;
+                L.note(soundOf(c.style));
+                {
+                    const auto& words = coreWords();
+                    float hw = L.w / 2;
+                    for (size_t k = 0; k < words.size(); k++) {
+                        float x = L.x + (k % 2) * hw, y = L.y + (k / 2) * 19;
+                        drawTextK(FontKind::Ui, words[k], {x, y}, 13, theme::kMuted);
+                        drawTextK(FontKind::UiBold, conWord(c, words[k]).c_str(), {x + 70, y}, 13, theme::kText);
+                    }
+                    L.y += ((words.size() + 1) / 2) * 19 + 8;
+                }
+                if (GuiTextBox(Rectangle{L.x, L.y, L.w, 28}, translateBuf, 255, translateEdit)) translateEdit = !translateEdit;
+                L.y += 32;
+                {
+                    std::string tr = translate(c, translateBuf);
+                    for (auto& ln : Layout::wrapLines(tr.c_str(), (int)L.w, 16)) { drawTextK(FontKind::SerifItalic, ln.c_str(), {L.x, L.y}, 17, theme::kAccentHi); L.y += 22; }
+                    L.y += 6;
+                }
+                if (L.button("Save as a language article")) {
+                    Article a; a.kind = LoreKind::Language; a.title = "The " + c.name + " tongue";
+                    a.fields = {{"Spoken by", c.name}, {"Hello", conWord(c, "hello")}, {"Goodbye", conWord(c, "goodbye")}};
+                    a.body = std::string("## Sound\n") + soundOf(c.style) + "\n\n## Common words\n";
+                    for (auto w : coreWords()) a.body += std::string(w) + " - " + conWord(c, w) + "\n";
+                    app.doc.articles.push_back(a);
+                    loreSel = (int)app.doc.articles.size() - 1;
+                    setStatus("Saved to the codex (Lore tab)");
+                }
             }
             if (GuiButton(Rectangle{L.x, L.y, bw2, 28}, "New culture")) {
                 Culture c; c.style = (NameStyle)GetRandomValue(0, (int)NameStyle::Count - 1);
@@ -3481,7 +3514,7 @@ int main() {
         if (++shotFrames == (getenv("WB_FRAMES") ? atoi(getenv("WB_FRAMES")) : 30)) { TakeScreenshot(getenv("WB_SHOT") ? getenv("WB_SHOT") : "shot.png"); break; }
 #endif
         typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
-                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || charUi.typing() || web.typing() || codexUi.typing() || calendarTyping || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
+                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || translateEdit || charUi.typing() || web.typing() || codexUi.typing() || calendarTyping || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
 
         // ---- Exports (after the frame, so the message above is visible while it works) ----
         static int exportFrames = 0;

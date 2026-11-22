@@ -132,6 +132,9 @@ struct Character {
     double wealth = 100, renown = 0, health = 1;   // coins, fame 0..100, 0..1
     bool followed = false, userMade = true;
     uint32_t look = 1;          // portrait seed
+    // tabletop stats (optional): STR DEX CON INT WIS CHA, hit points, armour class, level
+    std::vector<int> stats;     // empty = none
+    std::string klass;
     std::vector<LifeEvent> log;
     // where they are now (merchants travel between cities)
     int travelTo = -1; float travelT = 0;

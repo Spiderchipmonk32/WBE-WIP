@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdio>
+#include <cmath>
 
 std::string entityName(const Document& doc, EntityRef e) {
     switch (e.kind) {
@@ -208,6 +209,52 @@ void charactersPanel(CharUI& ui, Layout& L, Document& doc, int year, uint32_t se
         L.label(TextFormat("Renown: %.0f", rn)); L.slider(&rn, 0, 100); c->renown = rn;
         L.label(TextFormat("Health: %.0f%%", hp * 100)); L.slider(&hp, 0, 1); c->health = hp;
         (void)w;
+    }
+    // ---- tabletop stats ----
+    L.heading("GAME STATS");
+    if (c->stats.size() != 9) {
+        L.note("Give them a stat block for your tabletop game (ability scores, hit points, armour class, level).");
+        if (L.button("Add a stat block")) { c->stats = {10, 10, 10, 10, 10, 10, 8, 10, 1}; c->klass = c->occupation; }
+    } else {
+        static const char* ab[] = {"STR", "DEX", "CON", "INT", "WIS", "CHA"};
+        float cw = (L.w - 10) / 6;
+        for (int k = 0; k < 6; k++) {
+            float x = L.x + k * (cw + 2);
+            Rectangle box{x, L.y, cw, 64};
+            DrawRectangleRounded(box, 0.2f, 6, Color{30, 35, 47, 255});
+            Vector2 ts = measureTextK(FontKind::UiBold, ab[k], 12);
+            drawTextK(FontKind::UiBold, ab[k], {x + cw / 2 - ts.x / 2, L.y + 4}, 12, theme::kAccent);
+            int mod = (int)std::floor((c->stats[k] - 10) / 2.0);
+            const char* ms = TextFormat("%+d", mod);
+            ts = measureTextK(FontKind::UiBold, ms, 18);
+            drawTextK(FontKind::UiBold, ms, {x + cw / 2 - ts.x / 2, L.y + 18}, 18, theme::kText);
+            if (GuiButton(Rectangle{x + 2, L.y + 42, cw / 2 - 3, 18}, "-")) c->stats[k] = std::max(1, c->stats[k] - 1);
+            if (GuiButton(Rectangle{x + cw / 2 + 1, L.y + 42, cw / 2 - 3, 18}, "+")) c->stats[k] = std::min(30, c->stats[k] + 1);
+            const char* sv = TextFormat("%d", c->stats[k]);
+            ts = measureTextK(FontKind::Ui, sv, 11);
+            drawTextK(FontKind::Ui, sv, {x + cw - ts.x - 3, L.y + 4}, 11, theme::kMuted);
+        }
+        L.y += 72;
+        static const char* other[] = {"Hit points", "Armour class", "Level"};
+        for (int k = 0; k < 3; k++) {
+            drawTextK(FontKind::Ui, other[k], {L.x, L.y + 4}, 14, theme::kMuted);
+            int& v = c->stats[6 + k];
+            if (GuiButton(Rectangle{L.x + 110, L.y, 26, 24}, "-")) v = std::max(0, v - 1);
+            drawTextK(FontKind::UiBold, TextFormat("%d", v), {L.x + 146, L.y + 3}, 15, theme::kText);
+            if (GuiButton(Rectangle{L.x + 186, L.y, 26, 24}, "+")) v++;
+            L.y += 28;
+        }
+        float b2 = (L.w - 8) / 2;
+        if (GuiButton(Rectangle{L.x, L.y, b2, 28}, "Roll 4d6, drop lowest")) {
+            for (int k = 0; k < 6; k++) {
+                int d[4], sum = 0, lo = 7;
+                for (int& x : d) { x = GetRandomValue(1, 6); sum += x; lo = std::min(lo, x); }
+                c->stats[k] = sum - lo;
+            }
+            c->stats[6] = 8 + (int)std::floor((c->stats[2] - 10) / 2.0) + (c->stats[8] - 1) * 5;
+        }
+        if (GuiButton(Rectangle{L.x + b2 + 8, L.y, b2, 28}, "Remove stat block")) c->stats.clear();
+        L.y += 36;
     }
     drawTextK(FontKind::UiBold, "Appearance", {L.x, L.y}, 14, theme::kTeal); L.y += 20;
     textArea(Rectangle{L.x, L.y, L.w, 70}, c->appearance, ui.looksEdit, ui.looksScroll); L.y += 78;
