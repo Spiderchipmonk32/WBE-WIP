@@ -85,8 +85,17 @@ const char* districtName(District d);
 enum class LandmarkType : uint8_t { Market, Castle, Palace, Temple, Harbour, Gate, Guildhall, University, Tower, Monument, Inn, Other, Count };
 const char* landmarkName(LandmarkType t);
 struct Landmark { LandmarkType type = LandmarkType::Other; double x = 0, y = 0; std::string name; };   // metres east/north of the centre
+// Things placed on a city map (generated or stamped by hand), like map-making stamps
+enum class CityObj : uint8_t { House, Hall, Tower, Temple, Keep, Tree, Orchard, Well, Statue, Stall, Windmill, Ship, Tent, Rock, Field, Count };
+const char* cityObjName(CityObj t);
+struct CityObject { CityObj type = CityObj::House; float x = 0, y = 0, ang = 0, w = 10, d = 8; uint8_t shade = 0, district = 0; };
+struct CityLabel { float x = 0, y = 0, size = 30; std::string text; };
 struct CityPlan {
     int city = -1;
+    bool baked = false;                  // the user has edited buildings: keep these instead of generating
+    std::vector<CityObject> objects;
+    std::vector<CityLabel> labels;
+    std::vector<uint8_t> paint;          // ground painted by hand (material per terrain pixel, 0 = none)
     uint32_t seed = 1;
     bool walls = true;
     std::vector<Landmark> landmarks;

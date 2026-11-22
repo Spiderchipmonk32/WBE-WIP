@@ -56,6 +56,11 @@ void Document::removeNation(int n) {
     reindexLinks(EntKind::Nation, n);
 }
 
+const char* cityObjName(CityObj t) {
+    static const char* n[] = {"House", "Hall", "Tower", "Temple", "Keep", "Tree", "Orchard", "Well", "Statue", "Market stall", "Windmill", "Ship", "Tent", "Rock", "Field"};
+    return (int)t < (int)CityObj::Count ? n[(int)t] : "?";
+}
+
 const char* roleName(Role r) {
     static const char* n[] = {"Commoner", "Ruler", "Noble", "Merchant", "Criminal", "Soldier", "Priest", "Scholar", "Artisan", "Farmer", "Adventurer", "Mage"};
     return (int)r < (int)Role::Count ? n[(int)r] : "?";
@@ -135,6 +140,17 @@ void writeDocument(std::ostream& o, const Document& doc) {
             o << "\n";
         }
         for (const auto& e : p.districtEdits) o << "citydistrict " << p.city << " " << e.first << " " << (int)e.second << "\n";
+        if (p.baked) o << "citybaked " << p.city << "\n";
+        for (const CityObject& b : p.objects)
+            o << "cityobj " << p.city << " " << (int)b.type << " " << b.x << " " << b.y << " " << b.ang << " " << b.w << " " << b.d << " " << (int)b.shade << " " << (int)b.district << "\n";
+        for (const CityLabel& l : p.labels) o << "citylabel " << p.city << " " << l.x << " " << l.y << " " << l.size << " " << quote(l.text) << "\n";
+        if (!p.paint.empty()) {
+            // run-length: value count pairs
+            o << "citypaint " << p.city << " " << p.paint.size();
+            size_t i = 0;
+            while (i < p.paint.size()) { size_t j = i; while (j < p.paint.size() && p.paint[j] == p.paint[i] && j - i < 60000) j++; o << " " << (int)p.paint[i] << " " << (j - i); i = j; }
+            o << "\n";
+        }
     }
     // faith, run-length encoded like territory
     if (!doc.faith.empty() && !doc.religions.empty()) {
@@ -282,6 +298,27 @@ bool readDocumentLine(const std::string& key, std::istringstream& in, const std:
     if (key == "cityplan") {
         CityPlan p; int w, lm; in >> p.city >> p.seed >> w >> lm; p.walls = w != 0; p.landmarksMade = lm != 0;
         doc.plans.push_back(p); return true;
+    }
+    if (key == "citybaked" || key == "cityobj" || key == "citylabel" || key == "citypaint") {
+        int c; in >> c;
+        CityPlan* p = doc.planFor(c);
+        if (!p) return true;
+        if (key == "citybaked") p->baked = true;
+        else if (key == "cityobj") {
+            CityObject b; int t, sh, di;
+            if (in >> t >> b.x >> b.y >> b.ang >> b.w >> b.d >> sh >> di) { b.type = (CityObj)std::min(t, (int)CityObj::Count - 1); b.shade = (uint8_t)sh; b.district = (uint8_t)di; p->objects.push_back(b); }
+        } else if (key == "citylabel") {
+            CityLabel l; in >> l.x >> l.y >> l.size;
+            size_t pos = (size_t)in.tellg();
+            if (in && pos != std::string::npos && unquote(line, pos, l.text)) p->labels.push_back(l);
+        } else {
+            size_t n; in >> n;
+            if (n > 4000000) return true;
+            p->paint.assign(n, 0);
+            size_t i = 0; int v; size_t cnt;
+            while (i < n && in >> v >> cnt) { for (size_t k = 0; k < cnt && i < n; k++) p->paint[i++] = (uint8_t)v; }
+        }
+        return true;
     }
     if (key == "landmark" || key == "cityroad" || key == "citydistrict") {
         int c; in >> c;
