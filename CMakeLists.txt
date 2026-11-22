@@ -50,6 +50,8 @@ add_executable(Worldbuilder
     src/charpanel.cpp
     src/webview.cpp
     src/sim.cpp
+    src/codex.cpp
+    src/timeline.cpp
     src/fonts_data.cpp
   src/raygui_impl.c)
 target_include_directories(Worldbuilder PRIVATE src ${raygui_SOURCE_DIR}/src)
