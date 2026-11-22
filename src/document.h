@@ -69,11 +69,15 @@ struct HistEvent {
     std::string title, text;
 };
 
-enum class LoreKind : uint8_t { Place, Person, Faction, Religion, Creature, Item, Event, Other, Count };
+enum class LoreKind : uint8_t { Place, Person, Faction, Religion, Creature, Item, Event, Other,
+                                Settlement, Organization, Species, Language, Magic, Myth, Tradition, Material, Technology, Conflict, Quest, Session, Document, Title, Count };
 const char* loreKindName(LoreKind k);
 
 struct Article {
     std::string title, body;
+    std::string secret;       // notes only the world's author sees
+    std::string tags;         // comma separated
+    std::vector<std::pair<std::string, std::string>> fields;   // the infobox: name, value
     LoreKind kind = LoreKind::Other;
     bool pinned = false;      // shown on the map
     double lat = 0, lon = 0;

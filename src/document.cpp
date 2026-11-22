@@ -28,7 +28,9 @@ const char* landmarkName(LandmarkType t) {
     int i = (int)t; return i >= 0 && i < (int)LandmarkType::Count ? n[i] : "?";
 }
 const char* loreKindName(LoreKind k) {
-    static const char* n[] = {"Place", "Person", "Faction", "Religion", "Creature", "Item", "Event", "Other"};
+    static const char* n[] = {"Place", "Person", "Faction", "Religion", "Creature", "Item", "Event", "Other", "Settlement", "Organization",
+                              "Species", "Language", "Magic system", "Myth", "Tradition", "Material", "Technology", "Conflict", "Quest",
+                              "Session notes", "Document", "Title or rank"};
     int i = (int)k;
     return i >= 0 && i < (int)LoreKind::Count ? n[i] : "?";
 }
@@ -124,7 +126,12 @@ void writeDocument(std::ostream& o, const Document& doc) {
         o << "event " << e.year << " " << (int)e.type << " " << e.lat << " " << e.lon << " " << e.radiusKm << " " << e.strength << " "
           << quote(e.title) << " " << quote(e.text) << "\n";
     for (const Article& a : doc.articles)
+    {
         o << "article " << (int)a.kind << " " << (a.pinned ? 1 : 0) << " " << a.lat << " " << a.lon << " " << quote(a.title) << " " << quote(a.body) << "\n";
+        if (!a.secret.empty()) o << "articlesecret " << quote(a.secret) << "\n";
+        if (!a.tags.empty()) o << "articletags " << quote(a.tags) << "\n";
+        for (auto& f : a.fields) o << "articlefield " << quote(f.first) << " " << quote(f.second) << "\n";
+    }
     for (auto& r : doc.customRoutes) {
         o << "route " << r.from << " " << r.to << " " << r.mode << " " << quote(r.name) << "\n";
         for (auto& v : r.via) o << "routevia " << v.first << " " << v.second << "\n";
@@ -194,6 +201,16 @@ void writeDocument(std::ostream& o, const Document& doc) {
 
 bool readDocumentLine(const std::string& key, std::istringstream& in, const std::string& line, Document& doc) {
     if (key == "nextchar") { in >> doc.nextCharId; return true; }
+    if (key == "articlesecret" || key == "articletags" || key == "articlefield") {
+        if (doc.articles.empty()) return true;
+        Article& a = doc.articles.back();
+        size_t pos = (size_t)in.tellg();
+        if (pos == std::string::npos) return true;
+        if (key == "articlesecret") unquote(line, pos, a.secret);
+        else if (key == "articletags") unquote(line, pos, a.tags);
+        else { std::string k, v; if (unquote(line, pos, k)) { unquote(line, pos, v); a.fields.push_back({k, v}); } }
+        return true;
+    }
     if (key == "sim") {
         int st, cu;
         in >> doc.simYear >> doc.simMonth >> doc.simDay >> st >> doc.simSpeed >> doc.simBase >> cu >> doc.simWallClock >> doc.daysPerMonth;

@@ -11,6 +11,7 @@
 #include "charpanel.h"
 #include "webview.h"
 #include "sim.h"
+#include "codex.h"
 #include <ctime>
 #include "characters.h"
 #include "persistence.h"
@@ -485,6 +486,7 @@ int main() {
     bool showRoutes = true, showEvents = true, showPins = true, typing = false;
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
     CharUI charUi;
+    CodexUI codexUi;
     bool calendarTyping = false;
     bool camFollow = true, showNews = true; int followShow = -1; double lastTerritoryPaint = 0;
     WebView web;
@@ -631,6 +633,16 @@ int main() {
         if (followShow >= 0) { auto* f = app.doc.character(followShow); printf("FOLLOW %s alive=%d\n", f->name.c_str(), f->alive(app.doc.simYear)); for (auto& e : f->log) printf("   %d/%d %s\n", e.year, e.month, e.text.c_str()); }
         map.invalidateAll(); app.labelsDirty = true;
     }
+    if (getenv("WB_ARTICLE")) {
+        Article a; a.kind = LoreKind::Organization; a.title = "The Silver Hand"; a.tags = "faction, secret society";
+        a.body = "## Purpose\nA league of merchants who quietly fund wars on both sides, and profit from the [[Iron Road]].\n\n## History\nFounded in the ashes of the [[Fall of Jajie]], the Hand began as a burial society.\n\n## Members\nNo member knows more than three others.";
+        a.secret = "Its true leader is the queen's own physician.";
+        for (auto& f : templateFields(a.kind)) a.fields.push_back({f, ""});
+        a.fields[0].second = "Merchant league"; a.fields[1].second = "Year -120"; a.fields[2].second = "The Grey Lady";
+        app.doc.articles.push_back(a);
+        Article b; b.title = "Iron Road"; b.kind = LoreKind::Place; b.body = "The old road the [[The Silver Hand]] guards."; app.doc.articles.push_back(b);
+        loreSel = 0;
+    }
     if (const char* c = getenv("WB_CITY")) {
         citySel = atoi(c);
         if (getenv("WB_CITYED") && citySel < (int)app.doc.cities.size()) { map.waitIdle(); cityEd.open(citySel, app.planet, app.world, app.doc); }
@@ -721,7 +733,9 @@ int main() {
         const Rectangle newsRect{(float)sw - 372, 190, 360, 196};
         const bool overHud = CheckCollisionPointRec(mouse, clockRect) || (anyFollowed && tab != TabWeb && CheckCollisionPointRec(mouse, followRect)) ||
                              (showNews && app.doc.simStarted && !app.sim.news.empty() && tab != TabWeb && CheckCollisionPointRec(mouse, newsRect));
-        const bool overPanel = mouse.x < panel.x + panel.width || overChips || tab == TabWeb || overHud;   // the web takes over the map area
+        const bool lorePage = tab == TabLore && loreSel >= 0 && loreSel < (int)app.doc.articles.size() && codexUi.pageOpen && loreTool == 0;
+        const bool mapHidden = tab == TabWeb || lorePage;
+        const bool overPanel = mouse.x < panel.x + panel.width || overChips || tab == TabWeb || overHud || lorePage;   // the web takes over the map area
         const double minZoom = sh / 180.0, maxZoom = TileMap::TILE / 90.0 * (1 << TileMap::MAX_LEVEL) * 2;
         const bool sculptTab = (tab == TabSculpt);
         const int activeTool = sculptTab ? tool : 0;
@@ -1548,12 +1562,13 @@ int main() {
             if (std::fabs(prev.x - first.x) < sw / 2) DrawLineEx(prev, first, 1.5f, Fade(lc, 0.6f));   // closing edge
         }
 
+        if (lorePage) codexPage(codexUi, app.doc, loreSel, Rectangle{panel.x + panel.width, 0, (float)sw - panel.x - panel.width, (float)sh - 30});
         if (tab == TabWeb) {
             web.frame(app.doc, year, Rectangle{panel.x + panel.width, 0, (float)sw - panel.x - panel.width, (float)sh - 30}, dt,
                       mouse.x > panel.x + panel.width && !typing && !overHud);
         }
         // ---- Layer chips ----
-        if (tab != TabWeb) {
+        if (!mapHidden) {
             for (int i = 0; i < chipCount; i++) {
                 Rectangle r = chipRects[i];
                 bool on = overlayUi == kChips[i].overlay, hov = CheckCollisionPointRec(mouse, r);
@@ -2717,82 +2732,9 @@ int main() {
             }
             if (L.button("Update climate and rivers for this year")) app.recalcClimate();
         } else if (tab == TabLore) {
-            L.heading("LORE");
-            GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Search");
-            if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60, 28}, loreSearchBuf, 63, loreSearchEdit)) loreSearchEdit = !loreSearchEdit;
-            L.y += 34;
-            std::string q = loreSearchBuf;
-            for (char& ch : q) ch = (char)std::tolower((unsigned char)ch);
-            std::vector<int> shown;
-            std::string items;
-            for (int i = 0; i < (int)app.doc.articles.size(); i++) {
-                const Article& a = app.doc.articles[i];
-                std::string t = a.title + " " + a.body;
-                for (char& ch : t) ch = (char)std::tolower((unsigned char)ch);
-                if (!q.empty() && t.find(q) == std::string::npos) continue;
-                shown.push_back(i);
-                if (!items.empty()) items += ";";
-                items += cleanList(a.title.empty() ? std::string("(untitled)") : a.title) + "  [" + loreKindName(a.kind) + "]";
-            }
-            int row = -1;
-            for (size_t k = 0; k < shown.size(); k++) if (shown[k] == loreSel) row = (int)k;
-            int prevRow = row;
-            GuiListView(Rectangle{L.x, L.y, L.w, 130}, items.c_str(), &loreScroll, &row);
-            L.y += 138;
-            if (row != prevRow) loreSel = row >= 0 && row < (int)shown.size() ? shown[row] : -1;
-            float bw2 = (L.w - 8) / 2;
-            if (GuiButton(Rectangle{L.x, L.y, bw2, 28}, "New article")) {
-                Article a; a.title = "New article";
-                app.doc.articles.push_back(a);
-                loreSel = (int)app.doc.articles.size() - 1;
-            }
-            if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, "Delete article") && loreSel >= 0) {
-                app.doc.articles.erase(app.doc.articles.begin() + loreSel); loreSel = -1;
-            }
-            L.y += 36;
-            if (loreSel >= (int)app.doc.articles.size()) loreSel = -1;
-            if (loreSel != lastLoreSel) {
-                lastLoreSel = loreSel; loreTitleEdit = loreBodyEdit = false; loreBodyScroll = 0;
-                if (loreSel >= 0) std::strncpy(loreTitleBuf, app.doc.articles[loreSel].title.c_str(), 127);
-            }
-            if (loreSel >= 0) {
-                Article& a = app.doc.articles[loreSel];
-                if (GuiTextBox(Rectangle{L.x, L.y, L.w, 28}, loreTitleBuf, 127, loreTitleEdit)) loreTitleEdit = !loreTitleEdit;
-                a.title = loreTitleBuf; L.y += 34;
-                int kind = (int)a.kind;
-                GuiComboBox(Rectangle{L.x, L.y, bw2, 28}, "Place;Person;Faction;Religion;Creature;Item;Event;Other", &kind);
-                a.kind = (LoreKind)kind;
-                if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, a.pinned ? "Move map pin" : "Pin to map")) loreTool = 1;
-                L.y += 34;
-                if (loreTool == 1) L.note("Click the map where this belongs.");
-                float bodyH = std::max(120.f, panel.y + panel.height - L.y - 90);
-                textArea(Rectangle{L.x, L.y, L.w, bodyH}, a.body, loreBodyEdit, loreBodyScroll);
-                L.y += bodyH + 6;
-                // [[links]] to other articles
-                std::vector<std::string> links;
-                size_t p0 = 0;
-                while ((p0 = a.body.find("[[", p0)) != std::string::npos) {
-                    size_t p1 = a.body.find("]]", p0 + 2);
-                    if (p1 == std::string::npos) break;
-                    links.push_back(a.body.substr(p0 + 2, p1 - p0 - 2));
-                    p0 = p1 + 2;
-                }
-                float lx = L.x;
-                for (size_t k = 0; k < links.size() && k < 6; k++) {
-                    float wbtn = (float)uiMeasure(links[k].c_str(), 16) + 16;
-                    if (lx + wbtn > L.x + L.w) break;
-                    if (GuiButton(Rectangle{lx, L.y, wbtn, 24}, links[k].c_str())) {
-                        int found = -1;
-                        for (int i = 0; i < (int)app.doc.articles.size(); i++) if (app.doc.articles[i].title == links[k]) found = i;
-                        if (found < 0) { Article na; na.title = links[k]; app.doc.articles.push_back(na); found = (int)app.doc.articles.size() - 1; }
-                        loreSel = found;
-                    }
-                    lx += wbtn + 6;
-                }
-                if (links.empty()) L.note("Tip: write [[Another Article]] to link to it.");
-            } else {
-                L.note("Write articles about places, people, factions, religions, creatures and items. Pin them to the map, and link them with [[Title]].");
-            }
+            codexPanel(codexUi, L, app.doc, loreSel);
+            if (codexUi.wantPin) { codexUi.wantPin = false; loreTool = 1; setStatus("Click the map where this belongs"); }
+            if (loreTool == 1) L.note("Click the map where this belongs.");
         } else if (tab == TabWeb) {
             std::string msg;
             web.panel(L, app.doc, year, msg);
@@ -2926,8 +2868,8 @@ int main() {
                 uiText(t2.c_str(), (int)p.x + 22, (int)p.y - 26, 16, theme::kText);
             }
         }
-        if (showCompass && tab != TabWeb) drawCompass({panel.x + panel.width + 70, (float)sh - 150}, 42, map.style() == MapStyle::Fantasy);
-        if (showTitle && tab != TabWeb) {
+        if (showCompass && !mapHidden) drawCompass({panel.x + panel.width + 70, (float)sh - 150}, 42, map.style() == MapStyle::Fantasy);
+        if (showTitle && !mapHidden) {
             std::string t = nameBuf;
             for (char& ch : t) ch = (char)std::toupper((unsigned char)ch);
             float fsz = 44, spacing = 8;
@@ -2941,7 +2883,7 @@ int main() {
             DrawRectangleLinesEx({box.x + 5, box.y + 5, box.width - 10, box.height - 10}, 1, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
             DrawTextEx(tf, t.c_str(), {cx - ts.x / 2, 24}, fsz, spacing, fantasy ? Color{80, 50, 30, 255} : RAYWHITE);
         }
-        if (showMini && globeMini && tab != TabWeb) {
+        if (showMini && globeMini && !mapHidden) {
             // orthographic globe centred on the view, redrawn on the CPU when the view moves
             if (std::fabs(globeLat - view.centerLat) > 0.3 || std::fabs(std::remainder(globeLon - view.centerLon, 360.0)) > 0.3 || GetTime() - globeTime > 2) {
                 globeLat = view.centerLat; globeLon = view.centerLon; globeTime = GetTime();
@@ -2972,7 +2914,7 @@ int main() {
             DrawTexturePro(globeTex, Rectangle{0, 0, 200, 200}, gr, Vector2{0, 0}, 0, WHITE);
             float vr = (float)std::min(gs / 2.0, (sh / view.pxPerDeg) / 180.0 * gs / 2);
             DrawCircleLines((int)(gr.x + gs / 2), (int)(gr.y + gs / 2), std::max(3.f, vr), YELLOW);
-        } else if (showMini && tab != TabWeb) {
+        } else if (showMini && !mapHidden) {
             theme::card(Rectangle{miniRect.x - 4, miniRect.y - 4, miniRect.width + 8, miniRect.height + 8});
             map.drawMini(miniRect);
             float vw = (float)(sw / view.pxPerDeg / 360 * miniRect.width), vh = (float)(sh / view.pxPerDeg / 180 * miniRect.height);
@@ -3044,7 +2986,7 @@ int main() {
                 }
             }
         }
-        if (tab != TabWeb && showCities) {
+        if (!mapHidden && showCities) {
             // residents around each city when zoomed in, and markers for the people you follow
             if (view.pxPerDeg >= 30 && !app.doc.characters.empty()) {
                 std::unordered_map<int, int> perCity;
@@ -3088,7 +3030,7 @@ int main() {
             }
         }
         // the clock
-        {
+        if (!lorePage) {
             theme::card(clockRect);
             float x = clockRect.x + 12, cy = clockRect.y + clockRect.height / 2;
             if (!app.doc.simStarted) {
@@ -3133,7 +3075,7 @@ int main() {
             }
         }
         // the person you follow
-        if (followShow >= 0 && tab != TabWeb) {
+        if (followShow >= 0 && !mapHidden) {
             const Character* fc = app.doc.character(followShow);
             if (fc) {
                 Rectangle r = followRect;
@@ -3185,7 +3127,7 @@ int main() {
             }
         }
         // the news
-        if (showNews && app.doc.simStarted && !app.sim.news.empty() && tab != TabWeb) {
+        if (showNews && app.doc.simStarted && !app.sim.news.empty() && !mapHidden) {
             Rectangle r = newsRect;
             theme::card(r);
             drawTextK(FontKind::UiBold, "NEWS OF THE WORLD", {r.x + 12, r.y + 8}, 12, theme::kAccent);
@@ -3301,7 +3243,7 @@ int main() {
             theme::card(Rectangle{(float)bx, (float)by, (float)(tw + 20), (float)(4 * 22 + 12)});
             for (int i = 0; i < 4; i++) uiText(t[i].c_str(), bx + 10, by + 6 + i * 22, 18, i == 0 ? theme::kAccentHi : theme::kText);
         }
-        if (tab != TabWeb) drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
+        if (!mapHidden) drawScaleBar(view, R, (int)(panel.x + panel.width) + 24, sh - 60, th.text);
         if (!droppedPath.empty()) {
             Rectangle box{(float)sw / 2 - 300, (float)sh / 2 - 110, 600, 220};
             DrawRectangle(0, 0, sw, sh, Fade(BLACK, 0.45f));
@@ -3485,7 +3427,7 @@ int main() {
         if (++shotFrames == (getenv("WB_FRAMES") ? atoi(getenv("WB_FRAMES")) : 30)) { TakeScreenshot(getenv("WB_SHOT") ? getenv("WB_SHOT") : "shot.png"); break; }
 #endif
         typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
-                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || charUi.typing() || web.typing() || calendarTyping || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
+                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || charUi.typing() || web.typing() || codexUi.typing() || calendarTyping || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
 
         // ---- Exports (after the frame, so the message above is visible while it works) ----
         static int exportFrames = 0;
