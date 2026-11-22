@@ -3433,7 +3433,9 @@ int main() {
                 "  Nations / Cities / Peoples - countries, territory, cities, cultures, religions, rulers",
                 "  Trade - simulate the economy for an era; draw and edit your own routes, cargo and waypoints",
                 "  History - the year slider, events that change the map, generated histories",
-                "  Lore - wiki articles, map pins and [[links]]",
+                "  Lore - the codex: articles from templates, infoboxes, secrets, [[links]] and map pins",
+                "  Characters / Web - people, portraits, stat blocks; the relationship web and family trees",
+                "  The clock (bottom) - start the living world, change the speed, follow people",
                 "  File - save, load, autosave, export images, heightmaps and data",
             };
             int n = (int)(sizeof(help) / sizeof(help[0]));

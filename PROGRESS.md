@@ -4,6 +4,15 @@ Overnight build log. Newest entries at the top of each section. Each feature is 
 and every commit builds a fresh `Worldbuilder.exe` (repo → Actions → latest run → Artifacts).
 
 ## Done
+- **Living world** (clock at the bottom, History tab): pause, 1x-100x, and 1x meaning real time, a day a second or a month a second. Keeps going while the app is closed (the last world opens at start and catches up). People are born, marry, have children, trade, steal, scheme and die; rulers are succeeded or overthrown; rivalries turn into wars that move borders and take cities; unhappy realms rebel; empty realms fall. Important events go into the timeline and a news feed.
+- **Follow anyone**: a ruler, merchant, criminal or ordinary person (Cities tab, Characters tab, or the faces around a city when zoomed in). The camera rides along and their story carries on with their heir.
+- **Characters**: portraits, roles, traits, family, home, faith, looks, backstory, life story, tabletop stat blocks; generate rulers, nobles and townsfolk for every nation.
+- **Relationship web** (Web tab): nations, rulers and characters (plus cities, faiths, cultures) as a live graph; focus on anyone, drag to arrange, Shift-drag to link. **Family tree** view.
+- **City editor**: realistic packed medieval blocks, market square, castle, temple, wall towers, fields, windmills, trees, ships; Inkarnate-style tools: select/move/rotate/resize/copy/delete, stamp 15 kinds of object, scatter, erase, paint the ground, roads, labels, undo, save image.
+- **Codex** (Lore tab): 22 article templates with infoboxes, tags, secrets, [[links]] and backlinks, shown as a page.
+- **Timeline view** with named ages, events, nations and their rulers, and people's lives. **Calendar** with your own month names and month length.
+- **Languages**: each culture has its own tongue with a lexicon and a translator; save it to the codex.
+- **Rivers** wind naturally and end at the real coast; **cities** can no longer sit in water.
 - **Move tectonic plates** (World tab > Move plates): drag a plate's dot to move it, drag its arrow to change direction and speed, set it continental or oceanic, or merge it away. Drift time opens new oceans where plates part and raises ranges where they meet.
 - **Better brushes** (Sculpt tab): Draw land/sea shape (lasso a continent and it fills with natural coastline, shelf and drainage), Make land/sea only raise/lower past a chosen height, Mountains and Hills brushes, edge and roughness sliders, Shift reverses.
 - **City details**: what a city sells and buys (with tonnes and main partners), trade balance, what it makes, climate, rivers/ports and nearby resources; a card beside the selected city on the map.
