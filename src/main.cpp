@@ -528,6 +528,7 @@ int main() {
     }
     if (const char* c = getenv("WB_CITY")) {
         citySel = atoi(c);
+        if (getenv("WB_CITYED") && citySel < (int)app.doc.cities.size()) { map.waitIdle(); cityEd.open(citySel, app.planet, app.world, app.doc); }
         if (citySel < (int)app.doc.cities.size()) { view.centerLat = app.doc.cities[citySel].lat; view.centerLon = app.doc.cities[citySel].lon - 15; view.pxPerDeg *= 2.5; }
     }
     if (getenv("WB_POPS")) {
@@ -550,6 +551,9 @@ int main() {
     while (!WindowShouldClose()) {
         if (cityEd.active) {   // the city editor takes over the whole screen
             cityEd.frame(app.planet, app.world, app.doc);
+#ifdef WB_SHOTS
+            if (++shotFrames == (getenv("WB_FRAMES") ? atoi(getenv("WB_FRAMES")) : 30)) { TakeScreenshot(getenv("WB_SHOT") ? getenv("WB_SHOT") : "shot.png"); break; }
+#endif
             continue;
         }
         if (IsFileDropped()) {
