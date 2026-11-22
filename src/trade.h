@@ -29,6 +29,10 @@ struct TradeRoute {
     double days = 0;                    // travel time
     double seaShare = 0;                // fraction of the trip by sea or river
     bool custom = false;
+    int customIndex = -1;               // index into Document::customRoutes
+    double km = 0;                      // length
+    std::vector<double> legDays;        // travel days for each leg between waypoints
+    std::vector<int> legStart;          // index into cells where each leg starts
 };
 
 struct Economy {
@@ -44,6 +48,11 @@ struct Economy {
     void simulate(const World& w, const Document& doc, Era era);
     // Find a path between two cities (for custom routes); returns travel days, or -1
     double findPath(const World& w, const Document& doc, int a, int b, std::vector<int>& cells, double& seaShare) const;
+    // Route through a list of points (cells). mode 0: best path over the terrain between each pair;
+    // mode 1: straight lines exactly as drawn. Fills cells, sea share, length and days per leg. Returns days or -1.
+    double pathVia(const World& w, const std::vector<std::pair<double, double>>& pts, int mode, TradeRoute& r) const;
+    bool ready() const { return !speed.empty(); }
+    void prepare(const World& w, Era e) { era = e; buildTravelGrid(w, e); }
     std::vector<std::pair<int, double>> topExports(int city, int n) const;
     std::vector<std::pair<int, double>> topImports(int city, int n) const;
 private:

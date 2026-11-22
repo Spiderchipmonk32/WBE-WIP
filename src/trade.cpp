@@ -188,6 +188,65 @@ double Economy::findPath(const World& w, const Document& doc, int a, int b, std:
     return dj.dist[cb];
 }
 
+double Economy::pathVia(const World& w, const std::vector<std::pair<double, double>>& pts, int mode, TradeRoute& r) const {
+    r.cells.clear(); r.legDays.clear(); r.legStart.clear(); r.seaShare = 0; r.km = 0; r.days = 0;
+    if (pts.size() < 2 || speed.empty()) return -1;
+    const bool sailing = (int)era <= 2;
+    const double port = (int)era >= 3 ? 0.5 : 1.5;
+    int water = 0;
+    for (size_t leg = 0; leg + 1 < pts.size(); leg++) {
+        int ca = World::nearestCell(pts[leg].first, pts[leg].second), cb = World::nearestCell(pts[leg + 1].first, pts[leg + 1].second);
+        std::vector<int> cells;
+        double days = 0;
+        if (mode == 0) {
+            Dij dj;
+            runDijkstra(speed, kind, windU, windV, w, era, {{ca, 0}}, cb, dj);
+            if (dj.dist[cb] > 1e29f) return -1;
+            for (int c = cb; c >= 0; c = dj.parent[c]) cells.push_back(c);
+            std::reverse(cells.begin(), cells.end());
+            days = dj.dist[cb];
+        } else {
+            // straight (great-circle) line, sampled every half cell; impassable cells are crossed slowly
+            Vec3d a = w.cellDir[ca], b = w.cellDir[cb];
+            double ang = angleBetween(a, b);
+            int steps = std::max(1, (int)(ang * w.radiusKm / (w.cellKm() * 0.5)));
+            int last = -1;
+            for (int k = 0; k <= steps; k++) {
+                double t = (double)k / steps;
+                Vec3d p = ang < 1e-9 ? a : (a * (std::sin((1 - t) * ang) / std::sin(ang)) + b * (std::sin(t * ang) / std::sin(ang)));
+                double lat = std::asin(clampd(p.y / p.length(), -1, 1)) * 180 / kPi, lon = std::atan2(p.x, p.z) * 180 / kPi;
+                int c = World::nearestCell(lat, lon);
+                if (c != last) cells.push_back(c);
+                last = c;
+            }
+            for (size_t k = 0; k + 1 < cells.size(); k++) {
+                int i = cells[k], n = cells[k + 1];
+                double km = angleBetween(w.cellDir[i], w.cellDir[n]) * w.radiusKm;
+                double v = 0.5 * (std::max(speed[i], 5.f) + std::max(speed[n], 5.f));
+                if (sailing && kind[i] == 2 && kind[n] == 2) {
+                    // headwinds slow ships, tailwinds speed them up
+                    double lat = World::cellLat(i / World::W), dlon = std::remainder(World::cellLon(n % World::W) - World::cellLon(i % World::W), 360.0);
+                    double ex = dlon * std::cos(lat * kPi / 180), ny = World::cellLat(n / World::W) - lat, L = std::sqrt(ex * ex + ny * ny);
+                    double u = windU[i], vv = windV[i], sp = std::sqrt(u * u + vv * vv);
+                    if (sp > 0.1 && L > 0) v *= 0.8 + 0.35 * (u * ex + vv * ny) / (sp * L) * std::min(1.0, sp / 7.0);
+                }
+                days += km / std::max(1.0, v);
+                if ((kind[i] == 2) != (kind[n] == 2)) days += port;
+            }
+        }
+        r.legStart.push_back((int)r.cells.size());
+        for (size_t k = (r.cells.empty() ? 0 : 1); k < cells.size(); k++) r.cells.push_back(cells[k]);
+        r.legDays.push_back(days);
+        r.days += days;
+    }
+    for (size_t k = 0; k < r.cells.size(); k++) {
+        if (kind[r.cells[k]] != 0) water++;
+        if (k > 0) r.km += angleBetween(w.cellDir[r.cells[k - 1]], w.cellDir[r.cells[k]]) * w.radiusKm;
+    }
+    r.seaShare = r.cells.empty() ? 0 : (double)water / r.cells.size();
+    return r.days;
+}
+
 void Economy::simulate(const World& w, const Document& doc, Era e) {
     era = e;
     valid = false;

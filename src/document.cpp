@@ -84,7 +84,12 @@ void writeDocument(std::ostream& o, const Document& doc) {
           << quote(e.title) << " " << quote(e.text) << "\n";
     for (const Article& a : doc.articles)
         o << "article " << (int)a.kind << " " << (a.pinned ? 1 : 0) << " " << a.lat << " " << a.lon << " " << quote(a.title) << " " << quote(a.body) << "\n";
-    for (auto& r : doc.customRoutes) o << "route " << r.first << " " << r.second << "\n";
+    for (auto& r : doc.customRoutes) {
+        o << "route " << r.from << " " << r.to << " " << r.mode << " " << quote(r.name) << "\n";
+        for (auto& v : r.via) o << "routevia " << v.first << " " << v.second << "\n";
+        for (auto& g : r.goods) o << "routegood " << g.first << " " << g.second << "\n";
+    }
+    for (auto& h : doc.hiddenRoutes) o << "hideroute " << h.first << " " << h.second << "\n";
     for (const CityPlan& p : doc.plans) {
         o << "cityplan " << p.city << " " << p.seed << " " << (p.walls ? 1 : 0) << " " << (p.landmarksMade ? 1 : 0) << "\n";
         for (const Landmark& l : p.landmarks) o << "landmark " << p.city << " " << (int)l.type << " " << l.x << " " << l.y << " " << quote(l.name) << "\n";
@@ -261,7 +266,21 @@ bool readDocumentLine(const std::string& key, std::istringstream& in, const std:
         doc.articles.push_back(a);
         return true;
     }
-    if (key == "route") { int a, b; if (in >> a >> b) doc.customRoutes.push_back({a, b}); return true; }
+    if (key == "route") {
+        CustomRoute r;
+        if (!(in >> r.from >> r.to)) return true;
+        int mode;
+        if (in >> mode) {
+            r.mode = mode;
+            size_t pos = (size_t)in.tellg();
+            if (pos != std::string::npos) unquote(line, pos, r.name);
+        }
+        doc.customRoutes.push_back(r);
+        return true;
+    }
+    if (key == "routevia") { double la, lo; if (in >> la >> lo && !doc.customRoutes.empty()) doc.customRoutes.back().via.push_back({la, lo}); return true; }
+    if (key == "routegood") { int g; double t; if (in >> g >> t && !doc.customRoutes.empty()) doc.customRoutes.back().goods.push_back({g, t}); return true; }
+    if (key == "hideroute") { int a, b; if (in >> a >> b) doc.hiddenRoutes.push_back({a, b}); return true; }
     if (key == "owner") {
         const int W = 720, H = 360;
         doc.ensureOwner(W * H);

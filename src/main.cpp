@@ -7,6 +7,7 @@
 #include "tilemap.h"
 #include "ui.h"
 #include "theme.h"
+#include "flow.h"
 #include "persistence.h"
 #include "politics.h"
 #include "trade.h"
@@ -143,12 +144,48 @@ struct App {
         planet.setEventStrokes(st);
         lastEventStrokes = st;
     }
+    // Builds the TradeRoute for one of the user's routes (path, days, goods)
+    TradeRoute buildCustomRoute(int i, const std::vector<std::pair<int, double>>* fallbackGoods = nullptr) {
+        TradeRoute r; r.custom = true; r.customIndex = i;
+        const CustomRoute& cr = doc.customRoutes[i];
+        r.from = cr.from; r.to = cr.to;
+        if (cr.from < 0 || cr.to < 0 || cr.from >= (int)doc.cities.size() || cr.to >= (int)doc.cities.size()) { r.days = -1; return r; }
+        std::vector<std::pair<double, double>> pts;
+        pts.push_back({doc.cities[cr.from].lat, doc.cities[cr.from].lon});
+        for (auto& v : cr.via) pts.push_back(v);
+        pts.push_back({doc.cities[cr.to].lat, doc.cities[cr.to].lon});
+        if (!econ.ready()) econ.prepare(world, (Era)std::max(0, std::min(4, doc.era)));
+        econ.pathVia(world, pts, cr.mode, r);
+        r.goods = !cr.goods.empty() ? cr.goods : fallbackGoods ? *fallbackGoods : std::vector<std::pair<int, double>>{};
+        const auto& G = goodDefs();
+        for (auto& g : r.goods) { r.tonnes += g.second; if (g.first >= 0 && g.first < (int)G.size()) r.value += g.second * G[g.first].basePrice; }
+        return r;
+    }
+    static bool samePair(int a, int b, int c, int d) { return (a == c && b == d) || (a == d && b == c); }
+    // Replace (or add) the economy's copy of custom route i
+    void refreshCustomRoute(int i) {
+        std::vector<std::pair<int, double>> old;
+        for (auto& r : econ.routes) if (r.custom && r.customIndex == i) old = r.goods;
+        econ.routes.erase(std::remove_if(econ.routes.begin(), econ.routes.end(), [&](const TradeRoute& r) { return r.custom && r.customIndex == i; }), econ.routes.end());
+        TradeRoute r = buildCustomRoute(i, &old);
+        if (r.days >= 0) econ.routes.push_back(r);
+    }
     void simulateTrade() {
         econ.simulate(world, doc, (Era)std::max(0, std::min(4, doc.era)));
         econCities = doc.cities.size();
-        for (auto& cr : doc.customRoutes) {
-            TradeRoute r; r.from = cr.first; r.to = cr.second; r.custom = true;
-            r.days = econ.findPath(world, doc, cr.first, cr.second, r.cells, r.seaShare);
+        // routes the user hid or replaced with their own are taken out; their goods carry over to the user's route
+        std::vector<std::vector<std::pair<int, double>>> inherited(doc.customRoutes.size());
+        std::vector<TradeRoute> kept;
+        for (auto& r : econ.routes) {
+            bool drop = false;
+            for (auto& h : doc.hiddenRoutes) if (samePair(r.from, r.to, h.first, h.second)) drop = true;
+            for (size_t i = 0; i < doc.customRoutes.size(); i++)
+                if (samePair(r.from, r.to, doc.customRoutes[i].from, doc.customRoutes[i].to)) { drop = true; if (inherited[i].empty()) inherited[i] = r.goods; }
+            if (!drop) kept.push_back(r);
+        }
+        econ.routes.swap(kept);
+        for (int i = 0; i < (int)doc.customRoutes.size(); i++) {
+            TradeRoute r = buildCustomRoute(i, &inherited[i]);
             if (r.days >= 0) econ.routes.push_back(r);
         }
     }
@@ -270,7 +307,11 @@ static const char* kMonths[13] = {"January", "February", "March", "April", "May"
 
 int main() {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
+#ifdef WB_SHOTS
+    InitWindow(1600, getenv("WB_H") ? atoi(getenv("WB_H")) : 900, "Worldbuilder");
+#else
     InitWindow(1600, 900, "Worldbuilder");
+#endif
     SetTargetFPS(144);
     SetExitKey(KEY_NULL);   // Escape shouldn't close the app (it's used to stop typing)
     fontsInit();
@@ -327,6 +368,8 @@ int main() {
     int lastNationSel = -2, lastCitySel = -2;
     bool showRoutes = true, showEvents = true, showPins = true, typing = false;
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
+    bool flowWind = false, flowCurrents = false;
+    FlowLayer windFlow, curFlow; curFlow.currents = true; curFlow.rng = 999;
     bool showIntro = !FileExists("worldbuilder-intro-seen.txt");
     bool showStats = false, showHelp = false, showHex = false, globeMini = false, rotateLabels = true;
     Texture2D globeTex{}; bool haveGlobe = false; double globeLat = 999, globeLon = 999, globeTime = -10;
@@ -352,6 +395,12 @@ int main() {
     char loreTitleBuf[128] = "", loreSearchBuf[64] = "";
     bool loreTitleEdit = false, loreBodyEdit = false, loreSearchEdit = false;
     int goodSel = -1, goodScroll = 0, routeSel = -1, routeScroll = 0, routeTool = 0, routePickA = -1;
+    // route drawing / editing
+    int myRouteSel = -1, myRouteScroll = 0, drawFrom = -1, dragHandle = -1, drawMode = 0, addGoodUi = 0, lastMyRouteSel = -2;
+    std::vector<std::pair<double, double>> drawPts;
+    bool routeNameEdit = false, addGoodOpen = false; char routeNameBuf[64] = ""; float addTonnesT = 0.4f;
+    std::pair<double, double> dragStart{0, 0};
+    Rectangle pendingGoodDropdown{0, 0, 0, 0}; std::string pendingGoodList;
     auto randomColor = [](unsigned char& r, unsigned char& g, unsigned char& b) {
         double hue = GetRandomValue(0, 5999) / 1000.0; int hi = (int)hue; double f = hue - hi;
         double rgb[6][3] = {{1, f, 0}, {1 - f, 1, 0}, {0, 1, f}, {0, 1 - f, 1}, {f, 0, 1}, {1, 0, 1 - f}};
@@ -366,6 +415,37 @@ int main() {
     int shotFrames = 0;
     if (const char* t = getenv("WB_TAB")) tab = atoi(t);
     if (const char* o = getenv("WB_OVERLAY")) overlayUi = atoi(o);
+    if (getenv("WB_FLOW")) { flowWind = true; flowCurrents = true; }
+    if (getenv("WB_DEMO")) {   // a populated world for UI checks
+        map.waitIdle();
+        generateCultures(app.doc, 6, (uint32_t)app.ui.seed + 5u);
+        generateNations(app.doc, app.world, 40, (uint32_t)app.ui.seed + 17u);
+        generateCities(app.doc, app.world, 1, (uint32_t)app.ui.seed + 29u);
+        generateReligions(app.doc, app.world, 5, (uint32_t)app.ui.seed + 41u);
+        generateRulers(app.doc, (uint32_t)app.ui.seed + 53u);
+        generateRelations(app.doc, (uint32_t)app.ui.seed + 61u);
+        app.labelsDirty = true;
+        map.invalidateAll();
+        if (getenv("WB_TRADE")) {
+            app.simulateTrade();
+            if (const char* r = getenv("WB_ROUTE")) {   // "from to lat lon" : a custom route with one waypoint
+                CustomRoute cr; double la, lo;
+                int got = sscanf(r, "%d %d %lf %lf", &cr.from, &cr.to, &la, &lo);
+                if (got == 4) cr.via.push_back({la, lo});
+                else if (got == 2) {
+                    const City& A = app.doc.cities[cr.from]; const City& B = app.doc.cities[cr.to];
+                    cr.via.push_back({(A.lat + B.lat) / 2 + 4, A.lon + std::remainder(B.lon - A.lon, 360.0) / 2});
+                }
+                view.centerLat = app.doc.cities[cr.from].lat; view.centerLon = app.doc.cities[cr.from].lon;
+                cr.mode = getenv("WB_STRAIGHT") ? 1 : 0;
+                app.doc.customRoutes.push_back(cr);
+                app.refreshCustomRoute(0);
+                myRouteSel = 0;
+            }
+        }
+    }
+    if (const char* c = getenv("WB_CITY")) citySel = atoi(c);
+    if (const char* mo = getenv("WB_MONTH")) monthUi = (float)atof(mo);
     if (const char* z = getenv("WB_ZOOM")) view.pxPerDeg *= atof(z);
     if (const char* la = getenv("WB_LAT")) view.centerLat = atof(la);
     if (const char* lo = getenv("WB_LON")) view.centerLon = atof(lo);
@@ -407,6 +487,13 @@ int main() {
             for (int i = 0; i < chipCount; i++) {
                 float w = measureTextK(FontKind::Ui, kChips[i].name, 14).x + 22;
                 chipRects[i] = Rectangle{x, chipBar.y, w, 28};
+                x += w + 4;
+            }
+            x += 10;
+            for (int i = 0; i < 2; i++) {
+                const char* nm = i == 0 ? "Wind flow" : "Current flow";
+                float w = measureTextK(FontKind::Ui, nm, 14).x + 22;
+                chipRects[chipCount + i] = Rectangle{x, chipBar.y, w, 28};
                 x += w + 4;
             }
             chipBar.width = x - chipBar.x + 150;   // room for the month stepper
@@ -474,18 +561,134 @@ int main() {
             view.centerLat = lat0 + (mouse.y - sh / 2.0) / view.pxPerDeg;
         }
         bool clickedCity = false;
-        if (!overPanel && pickingRoute && hoverCity >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-            clickedCity = true;
-            if (routePickA < 0) { routePickA = hoverCity; setStatus("Now click the destination city"); }
-            else if (hoverCity != routePickA) {
-                app.doc.customRoutes.push_back({routePickA, hoverCity});
-                TradeRoute r; r.from = routePickA; r.to = hoverCity; r.custom = true;
-                if (!app.econ.valid) app.simulateTrade();
-                r.days = app.econ.findPath(app.world, app.doc, routePickA, hoverCity, r.cells, r.seaShare);
-                if (r.days >= 0) { app.econ.routes.push_back(r); setStatus(TextFormat("Route added: %.0f days", r.days)); }
-                else setStatus("No way to get there in this era");
-                routePickA = -1;
+        bool routeConsumed = false;
+        // ---- Drawing and editing trade routes (Trade tab) ----
+        auto scr = [&](double lat, double lon) {
+            double dl = std::remainder(lon - view.centerLon, 360.0);
+            return Vector2{(float)(sw / 2.0 + dl * view.pxPerDeg), (float)(sh / 2.0 - (lat - view.centerLat) * view.pxPerDeg)};
+        };
+        auto mouseLatLon = [&]() {
+            return std::pair<double, double>{clampd(view.centerLat - (mouse.y - sh / 2.0) / view.pxPerDeg, -89, 89),
+                                             wrapLon(view.centerLon + (mouse.x - sw / 2.0) / view.pxPerDeg)};
+        };
+        auto segDist = [](Vector2 p, Vector2 a, Vector2 b) {
+            float dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy;
+            float t = L2 > 0 ? clampd(((p.x - a.x) * dx + (p.y - a.y) * dy) / L2, 0, 1) : 0;
+            float ex = a.x + t * dx - p.x, ey = a.y + t * dy - p.y;
+            return std::sqrt(ex * ex + ey * ey);
+        };
+        // the user's route i as handle points: from city, waypoints, to city
+        auto handlesOf = [&](int i) {
+            std::vector<std::pair<double, double>> h;
+            if (i < 0 || i >= (int)app.doc.customRoutes.size()) return h;
+            const CustomRoute& cr = app.doc.customRoutes[i];
+            if (cr.from < 0 || cr.to < 0 || cr.from >= (int)app.doc.cities.size() || cr.to >= (int)app.doc.cities.size()) return h;
+            h.push_back({app.doc.cities[cr.from].lat, app.doc.cities[cr.from].lon});
+            for (auto& v : cr.via) h.push_back(v);
+            h.push_back({app.doc.cities[cr.to].lat, app.doc.cities[cr.to].lon});
+            return h;
+        };
+        auto econIndexOf = [&](int custom) {
+            for (int k = 0; k < (int)app.econ.routes.size(); k++) if (app.econ.routes[k].custom && app.econ.routes[k].customIndex == custom) return k;
+            return -1;
+        };
+        if (tab == TabTrade && !overPanel && !app.doc.cities.empty()) {
+            if (routeTool == 1) {
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    routeConsumed = true;
+                    if (drawFrom < 0) {
+                        if (hoverCity >= 0) { drawFrom = hoverCity; drawPts.clear(); setStatus("Click to add waypoints, then click the destination city"); }
+                        else setStatus("Start on a city");
+                    } else if (hoverCity >= 0 && hoverCity != drawFrom) {
+                        CustomRoute cr; cr.from = drawFrom; cr.to = hoverCity; cr.via = drawPts; cr.mode = drawMode;
+                        app.doc.customRoutes.push_back(cr);
+                        int idx = (int)app.doc.customRoutes.size() - 1;
+                        if (!app.econ.valid) app.simulateTrade(); else app.refreshCustomRoute(idx);
+                        int ei = econIndexOf(idx);
+                        if (ei >= 0) setStatus(TextFormat("Route added: %.0f days, %s", app.econ.routes[ei].days, formatKm(app.econ.routes[ei].km)));
+                        else setStatus("No way to get there in this era - try adding waypoints or a straight route");
+                        myRouteSel = idx; routeSel = ei; drawFrom = -1; drawPts.clear(); routeTool = 0;
+                    } else drawPts.push_back(mouseLatLon());
+                }
+                if (!typing && (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressed(KEY_Z))) { if (!drawPts.empty()) drawPts.pop_back(); else drawFrom = -1; }
+                if (IsKeyPressed(KEY_ESCAPE)) { drawFrom = -1; drawPts.clear(); routeTool = 0; }
+            } else {
+                auto H = handlesOf(myRouteSel);
+                int hoverHandle = -1;
+                for (int k = 0; k < (int)H.size(); k++) {
+                    Vector2 p = scr(H[k].first, H[k].second);
+                    if (std::hypot(p.x - mouse.x, p.y - mouse.y) < 9) hoverHandle = k;
+                }
+                if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+                    if (hoverHandle >= 0) { dragHandle = hoverHandle; dragStart = H[hoverHandle]; routeConsumed = true; }
+                    else {
+                        // on the selected route's line: insert a waypoint there and start dragging it
+                        int ei = econIndexOf(myRouteSel);
+                        bool inserted = false;
+                        if (ei >= 0) {
+                            const TradeRoute& r = app.econ.routes[ei];
+                            for (size_t k = 0; k + 1 < r.cells.size() && !inserted; k++) {
+                                Vector2 a = scr(World::cellLat(r.cells[k] / World::W), World::cellLon(r.cells[k] % World::W));
+                                Vector2 b = scr(World::cellLat(r.cells[k + 1] / World::W), World::cellLon(r.cells[k + 1] % World::W));
+                                if (std::fabs(a.x - b.x) > sw / 2 || segDist(mouse, a, b) > 6) continue;
+                                int leg = 0;
+                                for (int L2 = 0; L2 < (int)r.legStart.size(); L2++) if ((int)k >= r.legStart[L2]) leg = L2;
+                                auto& via = app.doc.customRoutes[myRouteSel].via;
+                                leg = std::min(leg, (int)via.size());
+                                via.insert(via.begin() + leg, mouseLatLon());
+                                dragHandle = leg + 1; dragStart = via[leg];
+                                inserted = true; routeConsumed = true;
+                            }
+                        }
+                        if (!inserted && hoverCity < 0) {
+                            // pick the route under the mouse
+                            int best = -1; float bd = 6;
+                            for (int ri = 0; ri < (int)app.econ.routes.size(); ri++) {
+                                const TradeRoute& r = app.econ.routes[ri];
+                                for (size_t k = 0; k + 1 < r.cells.size(); k++) {
+                                    Vector2 a = scr(World::cellLat(r.cells[k] / World::W), World::cellLon(r.cells[k] % World::W));
+                                    Vector2 b = scr(World::cellLat(r.cells[k + 1] / World::W), World::cellLon(r.cells[k + 1] % World::W));
+                                    if (std::fabs(a.x - b.x) > sw / 2) continue;
+                                    float d = segDist(mouse, a, b);
+                                    if (d < bd) { bd = d; best = ri; }
+                                }
+                            }
+                            if (best >= 0) {
+                                routeSel = best; routeConsumed = true;
+                                myRouteSel = app.econ.routes[best].custom ? app.econ.routes[best].customIndex : -1;
+                            }
+                        }
+                    }
+                }
+                if (dragHandle >= 0 && myRouteSel >= 0) {
+                    routeConsumed = true;
+                    CustomRoute& cr = app.doc.customRoutes[myRouteSel];
+                    int nv = (int)cr.via.size();
+                    if (dragHandle >= 1 && dragHandle <= nv) cr.via[dragHandle - 1] = mouseLatLon();
+                    if (IsMouseButtonReleased(MOUSE_BUTTON_LEFT)) {
+                        if (dragHandle == 0 || dragHandle == nv + 1) {
+                            // dropping an end on another city moves that end of the route
+                            int other = dragHandle == 0 ? cr.to : cr.from;
+                            if (hoverCity >= 0 && hoverCity != other) { (dragHandle == 0 ? cr.from : cr.to) = hoverCity; }
+                        }
+                        app.refreshCustomRoute(myRouteSel);
+                        routeSel = econIndexOf(myRouteSel);
+                        dragHandle = -1;
+                    }
+                }
+                if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && hoverHandle >= 1 && myRouteSel >= 0 && hoverHandle <= (int)app.doc.customRoutes[myRouteSel].via.size()) {
+                    auto& via = app.doc.customRoutes[myRouteSel].via;
+                    via.erase(via.begin() + (hoverHandle - 1));
+                    app.refreshCustomRoute(myRouteSel);
+                    routeSel = econIndexOf(myRouteSel);
+                    routeConsumed = true;
+                }
             }
+        }
+        if (routeConsumed) {
+            clickedCity = true;
+        } else if (!overPanel && pickingRoute && hoverCity >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            clickedCity = true;
         } else if (!overPanel && !anyTool && hoverPin >= 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             loreSel = hoverPin; clickedCity = true; tab = TabLore;
         } else if (!overPanel && !anyTool && hoverEvent >= 0 && hoverCity < 0 && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
@@ -494,7 +697,7 @@ int main() {
             citySel = hoverCity; clickedCity = true;
             if (tab != TabCities && tab != TabTrade) tab = TabCities;
         }
-        if (!overPanel && (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) ||
+        if (!overPanel && !routeConsumed && (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) || IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) ||
                            (!anyTool && !clickedCity && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))))
             panning = true;
         if (!IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) && !IsMouseButtonDown(MOUSE_BUTTON_LEFT) && !IsMouseButtonDown(MOUSE_BUTTON_RIGHT))
@@ -721,16 +924,74 @@ int main() {
                 bool sel = ri == routeSel || (citySel >= 0 && (r.from == citySel || r.to == citySel));
                 if (!r.custom && !sel && (!carries || (goodSel < 0 && r.value < minV))) continue;
                 if (r.from >= (int)app.doc.cities.size() || r.to >= (int)app.doc.cities.size()) continue;
-                float wpx = r.custom ? 2.5f : (float)clampd(1 + 3.5 * std::log10(1 + 9 * r.value / maxV), 1, 5);
+                float wpx = r.custom ? 3.f : (float)clampd(1 + 3.5 * std::log10(1 + 9 * r.value / maxV), 1, 5);
+                if (ri == routeSel) wpx += 1.5f;
                 Vector2 prev{0, 0}; bool have = false; int k = 0;
                 for (int c : r.cells) {
                     Vector2 p = toScreen(World::cellLat(c / World::W), World::cellLon(c % World::W));
                     bool water = app.world.elev[c] <= 0 || (!app.world.discharge.empty() && app.world.discharge[c] > 400);
                     Color col = r.custom ? Color{250, 210, 40, 230} : (water ? Color{30, 90, 200, 210} : Color{150, 90, 40, 210});
-                    if (sel) col = Color{255, 60, 200, 240};
-                    if (have && std::fabs(p.x - prev.x) < sw / 2 && !(r.custom && (k / 2) % 2 == 1)) DrawLineEx(prev, p, wpx, col);
+                    if (sel) col = r.custom ? Color{255, 225, 120, 255} : Color{255, 90, 210, 245};
+                    if (have && std::fabs(p.x - prev.x) < sw / 2) {
+                        if (r.custom) DrawLineEx(prev, p, wpx + 3, Fade(BLACK, 0.55f));   // outline so the user's routes stand out
+                        DrawLineEx(prev, p, wpx, col);
+                    }
                     prev = p; have = true; k++;
                 }
+            }
+        }
+        // ---- Route editing handles and the route being drawn ----
+        if (tab == TabTrade) {
+            if (myRouteSel >= 0 && myRouteSel < (int)app.doc.customRoutes.size()) {
+                auto H = handlesOf(myRouteSel);
+                int ei = econIndexOf(myRouteSel);
+                // days for each leg, written at the middle of the leg
+                if (ei >= 0 && dragHandle < 0) {
+                    const TradeRoute& r = app.econ.routes[ei];
+                    Vector2 lastLabel{-1000, -1000};
+                    for (size_t L2 = 0; L2 < r.legStart.size() && r.legStart.size() > 1; L2++) {
+                        int a = r.legStart[L2], b = L2 + 1 < r.legStart.size() ? r.legStart[L2 + 1] : (int)r.cells.size() - 1;
+                        int mid = r.cells[std::min((int)r.cells.size() - 1, (a + b) / 2)];
+                        Vector2 p = scr(World::cellLat(mid / World::W), World::cellLon(mid % World::W));
+                        if (std::hypot(p.x - lastLabel.x, p.y - lastLabel.y) < 70) continue;
+                        lastLabel = p;
+                        const char* t = TextFormat("%.1f days", r.legDays[L2]);
+                        Vector2 ts = measureTextK(FontKind::UiBold, t, 13);
+                        DrawRectangleRounded({p.x - ts.x / 2 - 6, p.y - 20, ts.x + 12, 18}, 0.5f, 6, Color{20, 24, 33, 220});
+                        drawTextK(FontKind::UiBold, t, {p.x - ts.x / 2, p.y - 18}, 13, theme::kAccentHi);
+                    }
+                }
+                for (int k = 0; k < (int)H.size(); k++) {
+                    Vector2 p = scr(H[k].first, H[k].second);
+                    if (dragHandle >= 0 && k > 0) {   // straight preview while dragging
+                        Vector2 q = scr(H[k - 1].first, H[k - 1].second);
+                        if (std::fabs(p.x - q.x) < sw / 2) DrawLineEx(q, p, 2, Fade(theme::kAccentHi, 0.7f));
+                    }
+                    bool end = k == 0 || k == (int)H.size() - 1;
+                    bool hov = std::hypot(p.x - mouse.x, p.y - mouse.y) < 9;
+                    float rr = hov ? 8.f : 6.f;
+                    if (end) { DrawRectangleRec({p.x - rr, p.y - rr, rr * 2, rr * 2}, Color{20, 24, 33, 255}); DrawRectangleLinesEx({p.x - rr, p.y - rr, rr * 2, rr * 2}, 2, theme::kAccentHi); }
+                    else { DrawCircleV(p, rr, Color{20, 24, 33, 255}); DrawCircleLinesV(p, rr, theme::kAccentHi); DrawCircleV(p, rr - 3, theme::kAccent); }
+                }
+            }
+            if (routeTool == 1 && drawFrom >= 0 && drawFrom < (int)app.doc.cities.size()) {
+                std::vector<std::pair<double, double>> pts{{app.doc.cities[drawFrom].lat, app.doc.cities[drawFrom].lon}};
+                for (auto& v : drawPts) pts.push_back(v);
+                Vector2 prev = scr(pts[0].first, pts[0].second);
+                for (size_t k = 1; k < pts.size(); k++) {
+                    Vector2 p = scr(pts[k].first, pts[k].second);
+                    if (std::fabs(p.x - prev.x) < sw / 2) DrawLineEx(prev, p, 2.5f, theme::kAccentHi);
+                    DrawCircleV(p, 5, theme::kAccent);
+                    prev = p;
+                }
+                // dashed line to the mouse
+                float len = std::hypot(mouse.x - prev.x, mouse.y - prev.y);
+                int dashes = std::max(1, (int)(len / 10));
+                for (int k = 0; k < dashes; k += 2) {
+                    float t0 = (float)k / dashes, t1 = (float)(k + 1) / dashes;
+                    DrawLineEx({prev.x + (mouse.x - prev.x) * t0, prev.y + (mouse.y - prev.y) * t0}, {prev.x + (mouse.x - prev.x) * t1, prev.y + (mouse.y - prev.y) * t1}, 2, Fade(theme::kAccentHi, 0.8f));
+                }
+                DrawRectangleLinesEx({prev.x - 7, prev.y - 7, 14, 14}, 2, theme::kAccentHi);
             }
         }
         // ---- Caravans and ships moving along the main routes ----
@@ -868,27 +1129,19 @@ int main() {
                     drawArrow({sx, sy}, {sx + ve * k, sy - vn * k}, Fade(BLACK, 0.7f), 2.f);
                 }
         }
-        if (ov == Overlay::Wind || ov == Overlay::Currents) {
-            const float stepPx = 56;
-            int m = ov == Overlay::Wind ? std::min(11, (int)std::round(monthUi) % 12) : 0;
-            for (float sy = stepPx / 2; sy < sh; sy += stepPx)
-                for (float sx = panel.x + panel.width + stepPx / 2; sx < sw; sx += stepPx) {
-                    double lat = view.centerLat - (sy - sh / 2.0) / view.pxPerDeg;
-                    if (std::fabs(lat) > 88) continue;
-                    double lon = wrapLon(view.centerLon + (sx - sw / 2.0) / view.pxPerDeg);
-                    float u, v, k;
-                    if (ov == Overlay::Wind) {
-                        u = (float)World::sample(app.world.windU[m], lat, lon); v = (float)World::sample(app.world.windV[m], lat, lon); k = 3.2f;
-                    } else {
-                        if (app.world.elev[World::nearestCell(lat, lon)] > 0) continue;
-                        u = (float)World::sample(app.world.currentU, lat, lon); v = (float)World::sample(app.world.currentV, lat, lon); k = 30.f;
-                    }
-                    float len = std::sqrt(u * u + v * v) * k;
-                    if (len < 3) continue;
-                    if (len > stepPx * 0.9f) { u *= stepPx * 0.9f / len; v *= stepPx * 0.9f / len; }
-                    Vector2 a{sx - u * k / 2, sy + v * k / 2}, b{sx + u * k / 2, sy - v * k / 2};
-                    drawArrow(a, b, ov == Overlay::Wind ? Fade(BLACK, 0.65f) : Fade(Color{10, 40, 90, 255}, 0.85f), 2.f);
-                }
+        {
+            // Animated wind / current flow (always shown with the Wind and Currents layers)
+            Rectangle area{panel.x + panel.width, 0, (float)sw - panel.x - panel.width, (float)sh - 30};
+            auto toLL = [&](float x, float y, double& lat, double& lon) {
+                lat = view.centerLat - (y - sh / 2.0) / view.pxPerDeg;
+                lon = wrapLon(view.centerLon + (x - sw / 2.0) / view.pxPerDeg);
+                return std::fabs(lat) <= 90;
+            };
+            int count = (int)clampd(area.width * area.height / 700.0, 300, 2600);
+            int mo = std::min(12, (int)std::round(monthUi));
+            bool ink = map.style() == MapStyle::Fantasy;
+            if (flowWind || ov == Overlay::Wind) { windFlow.update(app.world, mo, area, dt, toLL, 7.f, count); windFlow.draw(ink); }
+            if (flowCurrents || ov == Overlay::Currents) { curFlow.update(app.world, mo, area, dt, toLL, 7.f, count / 2); curFlow.draw(ink); }
         }
         if (showVolcanoes && (ov == Overlay::Plates || ov == Overlay::Rock || ov == Overlay::Earthquakes || view.pxPerDeg > 12)) {
             for (const Volcano& v : app.world.volcanoes) {
@@ -935,9 +1188,20 @@ int main() {
                           on ? Color{30, 22, 10, 255} : theme::kText);
                 if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) overlayUi = on ? 0 : kChips[i].overlay;
             }
+            for (int i = 0; i < 2; i++) {
+                Rectangle r = chipRects[chipCount + i];
+                bool& on = i == 0 ? flowWind : flowCurrents;
+                bool hov = CheckCollisionPointRec(mouse, r);
+                DrawRectangleRounded(r, 0.5f, 8, on ? theme::kTeal : hov ? Color{44, 52, 70, 235} : Color{20, 24, 33, 225});
+                DrawRectangleRoundedLinesEx(r, 0.5f, 8, 1, on ? Color{150, 235, 235, 255} : Color{60, 70, 92, 255});
+                const char* nm = i == 0 ? "Wind flow" : "Current flow";
+                Vector2 ts = measureTextK(on ? FontKind::UiBold : FontKind::Ui, nm, 14);
+                drawTextK(on ? FontKind::UiBold : FontKind::Ui, nm, {r.x + r.width / 2 - ts.x / 2, r.y + 6}, 14, on ? Color{10, 30, 30, 255} : theme::kText);
+                if (hov && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) on = !on;
+            }
             // month stepper for seasonal layers
-            if (overlayUi == 5 || overlayUi == 6 || overlayUi == 8 || overlayUi == 14) {
-                float x = chipRects[chipCount - 1].x + chipRects[chipCount - 1].width + 12;
+            if (overlayUi == 5 || overlayUi == 6 || overlayUi == 8 || overlayUi == 14 || flowWind) {
+                float x = chipRects[chipCount + 1].x + chipRects[chipCount + 1].width + 12;
                 Rectangle box{x, chipBar.y, 140, 28};
                 DrawRectangleRounded(box, 0.5f, 8, Color{20, 24, 33, 225});
                 DrawRectangleRoundedLinesEx(box, 0.5f, 8, 1, Color{60, 70, 92, 255});
@@ -1588,31 +1852,168 @@ int main() {
                     L.label(TextFormat("Made: %s per year", formatTonnes(app.econ.totalProduction[goodSel])));
                     L.label(TextFormat("Price: %.3g to %.3g coins/t   Exporters: %d", lo, hi, sellers));
                 }
-                L.heading("TOP ROUTES");
+                L.heading("YOUR ROUTES");
+                {
+                    int rt = routeTool;
+                    GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 4) / 2, 30}, "Select / edit;Draw a route", &rt);
+                    if (rt != routeTool) { routeTool = rt; drawFrom = -1; drawPts.clear(); }
+                    L.y += 38;
+                }
+                if (routeTool == 1) {
+                    GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 4) / 2, 26}, "Follow terrain;Straight lines", &drawMode);
+                    L.y += 32;
+                    L.note(drawFrom < 0 ? "Click the city the route starts from." :
+                           "Click the map to add waypoints, then click the destination city. Backspace removes the last point, Esc cancels.");
+                    L.note(drawMode == 0 ? "Follow terrain: between your points the route finds the quickest way over land, rivers and sea."
+                                         : "Straight lines: the route goes exactly where you click. Turn on Wind flow to sail with the wind.");
+                }
+                std::string mine;
+                for (int i = 0; i < (int)app.doc.customRoutes.size(); i++) {
+                    const CustomRoute& cr = app.doc.customRoutes[i];
+                    if (!mine.empty()) mine += ";";
+                    std::string nm = cr.name;
+                    if (nm.empty() && cr.from >= 0 && cr.to >= 0 && cr.from < (int)app.doc.cities.size() && cr.to < (int)app.doc.cities.size())
+                        nm = app.doc.cities[cr.from].name + " > " + app.doc.cities[cr.to].name;
+                    mine += cleanList(nm);
+                }
+                if (!app.doc.customRoutes.empty()) {
+                    int prev = myRouteSel;
+                    GuiListView(Rectangle{L.x, L.y, L.w, std::min(130.f, 26.f * app.doc.customRoutes.size() + 6)}, mine.c_str(), &myRouteScroll, &myRouteSel);
+                    L.y += std::min(130.f, 26.f * app.doc.customRoutes.size() + 6) + 8;
+                    if (myRouteSel != prev && myRouteSel >= 0) routeSel = econIndexOf(myRouteSel);
+                } else if (routeTool == 0) L.note("Draw your own routes, or click any route on the map and press Edit to change it.");
+                if (myRouteSel != lastMyRouteSel) {
+                    lastMyRouteSel = myRouteSel;
+                    routeNameEdit = false;
+                    if (myRouteSel >= 0 && myRouteSel < (int)app.doc.customRoutes.size()) snprintf(routeNameBuf, sizeof routeNameBuf, "%s", app.doc.customRoutes[myRouteSel].name.c_str());
+                }
+                if (myRouteSel >= 0 && myRouteSel < (int)app.doc.customRoutes.size()) {
+                    CustomRoute& cr = app.doc.customRoutes[myRouteSel];
+                    int ei = econIndexOf(myRouteSel);
+                    L.heading("SELECTED ROUTE");
+                    GuiLabel(Rectangle{L.x, L.y, 50, 28}, "Name");
+                    if (GuiTextBox(Rectangle{L.x + 52, L.y, L.w - 52, 28}, routeNameBuf, 63, routeNameEdit)) {
+                        routeNameEdit = !routeNameEdit;
+                        cr.name = routeNameBuf;
+                    }
+                    L.y += 36;
+                    if (cr.from < (int)app.doc.cities.size() && cr.to < (int)app.doc.cities.size())
+                        L.label(TextFormat("From %s to %s", app.doc.cities[cr.from].name.c_str(), app.doc.cities[cr.to].name.c_str()));
+                    if (ei >= 0) {
+                        const TradeRoute& r = app.econ.routes[ei];
+                        L.label(TextFormat("Travel time: %.1f days", r.days));
+                        L.label(TextFormat("Length: %s", formatKm(r.km)));
+                        L.label(TextFormat("By water: %.0f%%", r.seaShare * 100));
+                        if (r.legDays.size() > 1) {
+                            std::string legs;
+                            for (size_t k = 0; k < r.legDays.size(); k++) { if (k) legs += ", "; legs += TextFormat("%.1f", r.legDays[k]); }
+                            L.note(("Days per leg: " + legs).c_str());
+                        }
+                    } else L.note("No way through in this era. Add waypoints or switch to straight lines.");
+                    int md = cr.mode;
+                    GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 4) / 2, 26}, "Follow terrain;Straight lines", &md);
+                    L.y += 34;
+                    if (md != cr.mode) { cr.mode = md; app.refreshCustomRoute(myRouteSel); routeSel = econIndexOf(myRouteSel); }
+                    L.note("Drag the square ends onto other cities, drag the round waypoints, click the line to add a waypoint, right-click a waypoint to remove it.");
+                    L.heading("CARGO");
+                    const auto& G = goodDefs();
+                    std::vector<std::pair<int, double>>& goods = cr.goods;
+                    if (goods.empty() && ei >= 0) goods = app.econ.routes[ei].goods;   // start from what the simulation carried
+                    int removeAt = -1;
+                    for (int k = 0; k < (int)goods.size(); k++) {
+                        if (goods[k].first < 0 || goods[k].first >= (int)G.size()) continue;
+                        drawTextK(FontKind::Ui, G[goods[k].first].name, {L.x, L.y + 4}, 15, theme::kText);
+                        const char* t = formatTonnes(goods[k].second);
+                        Vector2 ts = measureTextK(FontKind::UiBold, t, 15);
+                        drawTextK(FontKind::UiBold, t, {L.x + L.w - 64 - ts.x, L.y + 4}, 15, Color{240, 230, 210, 255});
+                        if (GuiButton(Rectangle{L.x + L.w - 56, L.y, 26, 24}, "-")) goods[k].second = std::max(1.0, goods[k].second / 2);
+                        if (GuiButton(Rectangle{L.x + L.w - 28, L.y, 28, 24}, "+")) goods[k].second *= 2;
+                        if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && CheckCollisionPointRec(mouse, Rectangle{L.x, L.y, L.w - 60, 24})) removeAt = k;
+                        L.y += 28;
+                    }
+                    if (removeAt >= 0) goods.erase(goods.begin() + removeAt);
+                    if (goods.empty()) L.note("Nothing carried yet. Add goods below.");
+                    else L.note("- and + halve or double the tonnes. Right-click a good to drop it.");
+                    {
+                        std::string gl;
+                        for (int g = 0; g < (int)G.size(); g++) { if (g) gl += ";"; gl += G[g].name; }
+                        Rectangle dd{L.x, L.y, L.w - 90, 28};
+                        if (GuiButton(Rectangle{L.x + L.w - 82, L.y, 82, 28}, "Add")) {
+                            bool found = false;
+                            for (auto& g : goods) if (g.first == addGoodUi) { g.second += 1000; found = true; }
+                            if (!found) goods.push_back({addGoodUi, 1000});
+                        }
+                        L.y += 36;
+                        // the dropdown is drawn after the rest of the panel so its list sits on top
+                        pendingGoodDropdown = dd; pendingGoodList = gl;
+                        if (addGoodOpen) GuiLock();
+                    }
+                    if (ei >= 0) {
+                        TradeRoute& r = app.econ.routes[ei];
+                        r.goods = goods; r.tonnes = 0; r.value = 0;
+                        for (auto& g : goods) { r.tonnes += g.second; r.value += g.second * G[g.first].basePrice; }
+                        L.label(TextFormat("Total: %s/yr worth %.3g coins", formatTonnes(r.tonnes), r.value));
+                    }
+                    float bw = (L.w - 8) / 2;
+                    if (GuiButton(Rectangle{L.x, L.y, bw, 28}, "Reverse")) { std::swap(cr.from, cr.to); std::reverse(cr.via.begin(), cr.via.end()); app.refreshCustomRoute(myRouteSel); }
+                    if (GuiButton(Rectangle{L.x + bw + 8, L.y, bw, 28}, "Clear waypoints")) { cr.via.clear(); app.refreshCustomRoute(myRouteSel); }
+                    L.y += 36;
+                    if (L.button("Delete this route")) {
+                        int del = myRouteSel;
+                        app.doc.customRoutes.erase(app.doc.customRoutes.begin() + del);
+                        app.econ.routes.erase(std::remove_if(app.econ.routes.begin(), app.econ.routes.end(), [&](const TradeRoute& r) { return r.custom && r.customIndex == del; }), app.econ.routes.end());
+                        for (auto& r : app.econ.routes) if (r.custom && r.customIndex > del) r.customIndex--;
+                        myRouteSel = -1; routeSel = -1;
+                    }
+                } else if (routeSel >= 0 && routeSel < (int)app.econ.routes.size() && !app.econ.routes[routeSel].custom) {
+                    const TradeRoute& r = app.econ.routes[routeSel];
+                    L.heading("SELECTED ROUTE");
+                    if (r.from < (int)app.doc.cities.size() && r.to < (int)app.doc.cities.size())
+                        L.label(TextFormat("From %s to %s", app.doc.cities[r.from].name.c_str(), app.doc.cities[r.to].name.c_str()));
+                    L.label(TextFormat("Travel time: %.0f days", r.days));
+                    L.label(TextFormat("By water: %.0f%%", r.seaShare * 100));
+                    L.label(TextFormat("Cargo: %s/yr", formatTonnes(r.tonnes)));
+                    std::string g;
+                    for (size_t k = 0; k < r.goods.size() && k < 5; k++) { if (k) g += ", "; g += goodDefs()[r.goods[k].first].name; }
+                    L.note(("Carries: " + g).c_str());
+                    float bw = (L.w - 8) / 2;
+                    if (GuiButton(Rectangle{L.x, L.y, bw, 30}, "Edit this route")) {
+                        CustomRoute cr; cr.from = r.from; cr.to = r.to; cr.goods = r.goods; cr.mode = 0;
+                        // keep its shape: a few waypoints along the simulated path
+                        int n = (int)r.cells.size();
+                        for (int k = 1; k <= 3 && n > 8; k++) { int c = r.cells[n * k / 4]; cr.via.push_back({World::cellLat(c / World::W), World::cellLon(c % World::W)}); }
+                        app.doc.customRoutes.push_back(cr);
+                        int idx = (int)app.doc.customRoutes.size() - 1;
+                        app.econ.routes.erase(app.econ.routes.begin() + routeSel);
+                        app.refreshCustomRoute(idx);
+                        myRouteSel = idx; routeSel = econIndexOf(idx);
+                        setStatus("This route is now yours: drag its points to change it");
+                    }
+                    if (GuiButton(Rectangle{L.x + bw + 8, L.y, bw, 30}, "Remove route")) {
+                        app.doc.hiddenRoutes.push_back({r.from, r.to});
+                        app.econ.routes.erase(app.econ.routes.begin() + routeSel);
+                        routeSel = -1;
+                    }
+                    L.y += 38;
+                }
+                L.heading("BIGGEST ROUTES");
                 std::string ritems;
-                int shown = std::min<int>(40, (int)app.econ.routes.size());
-                for (int i = 0; i < shown; i++) {
+                std::vector<int> listed;
+                for (int i = 0; i < (int)app.econ.routes.size() && (int)listed.size() < 40; i++) {
                     const TradeRoute& r = app.econ.routes[i];
-                    if (r.from >= (int)app.doc.cities.size() || r.to >= (int)app.doc.cities.size()) continue;
+                    if (r.custom || r.from >= (int)app.doc.cities.size() || r.to >= (int)app.doc.cities.size()) continue;
                     if (!ritems.empty()) ritems += ";";
                     ritems += cleanList(app.doc.cities[r.from].name) + " > " + cleanList(app.doc.cities[r.to].name);
+                    listed.push_back(i);
                 }
-                GuiListView(Rectangle{L.x, L.y, L.w, 120}, ritems.c_str(), &routeScroll, &routeSel);
-                L.y += 128;
-                if (routeSel >= 0 && routeSel < (int)app.econ.routes.size()) {
-                    const TradeRoute& r = app.econ.routes[routeSel];
-                    L.label(TextFormat("%.0f days, %.0f%% by water, %s/yr", r.days, r.seaShare * 100, formatTonnes(r.tonnes)));
-                    std::string g;
-                    for (size_t k = 0; k < r.goods.size() && k < 4; k++) { if (k) g += ", "; g += goodDefs()[r.goods[k].first].name; }
-                    L.note(("Carries: " + g).c_str());
-                }
-                L.heading("YOUR OWN ROUTES");
-                GuiToggleGroup(Rectangle{L.x, L.y, (L.w - 4) / 2, 28}, "Off;Add route", &routeTool);
-                L.y += 36;
-                if (routeTool == 1) L.note(routePickA < 0 ? "Click the starting city on the map." : "Click the destination city.");
-                if (!app.doc.customRoutes.empty() && L.button("Remove all my routes")) {
-                    app.doc.customRoutes.clear();
-                    app.econ.routes.erase(std::remove_if(app.econ.routes.begin(), app.econ.routes.end(), [](const TradeRoute& r) { return r.custom; }), app.econ.routes.end());
+                int li = -1;
+                for (int k = 0; k < (int)listed.size(); k++) if (listed[k] == routeSel) li = k;
+                int prevLi = li;
+                GuiListView(Rectangle{L.x, L.y, L.w, 130}, ritems.c_str(), &routeScroll, &li);
+                L.y += 138;
+                if (li != prevLi && li >= 0 && li < (int)listed.size()) { routeSel = listed[li]; myRouteSel = -1; }
+                if (!app.doc.hiddenRoutes.empty() && L.button(TextFormat("Bring back %d removed routes", (int)app.doc.hiddenRoutes.size()))) {
+                    app.doc.hiddenRoutes.clear(); app.simulateTrade();
                 }
             }
         } else if (tab == TabHistory) {
@@ -1770,6 +2171,11 @@ int main() {
             if (L.button("Update climate for new terrain", 30)) app.recalcClimate();
             L.note("Left-drag on the map to sculpt. Keys 1-5 switch tools, [ and ] resize the brush.");
         }
+        if (pendingGoodDropdown.width > 0) {
+            if (addGoodOpen) GuiUnlock();
+            if (GuiDropdownBox(pendingGoodDropdown, pendingGoodList.c_str(), &addGoodUi, addGoodOpen)) addGoodOpen = !addGoodOpen;
+            pendingGoodDropdown.width = 0;
+        } else addGoodOpen = false;
         if (lockHidden) GuiUnlock();
         EndScissorMode();
         panelContentH[tab] = L.y - layoutStartY + 30;
@@ -1898,7 +2304,21 @@ int main() {
                 clim += std::string("   |   ") + app.doc.nations[nat].name + " (" + kGovernments[app.doc.nations[nat].government] + ")";
             int rel = map.religionAt(mLat, mLon);
             if (rel >= 0 && rel < (int)app.doc.religions.size()) clim += std::string(", ") + app.doc.religions[rel].name;
-            std::string lines[6] = {
+            std::string windLine;
+            {
+                float u, v; int mo = std::min(12, (int)std::round(monthUi));
+                if (windFlow.velocity(app.world, mo, mLat, mLon, u, v)) {
+                    static const char* dirs[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+                    double from = std::atan2(-u, -v) * 180 / kPi; if (from < 0) from += 360;
+                    windLine = TextFormat("Wind: %.0f km/h from the %s (%s)", std::sqrt(u * u + v * v) * 3.6, dirs[(int)std::lround(from / 45) % 8], kMonths[mo]);
+                    if (app.world.elev[c] <= 0 && !app.world.currentU.empty()) {
+                        float cu = (float)World::sample(app.world.currentU, mLat, mLon), cv = (float)World::sample(app.world.currentV, mLat, mLon);
+                        double to = std::atan2(cu, cv) * 180 / kPi; if (to < 0) to += 360;
+                        windLine += TextFormat("   Current: %.1f km/h to the %s", std::sqrt(cu * cu + cv * cv) * 3.6, dirs[(int)std::lround(to / 45) % 8]);
+                    }
+                }
+            }
+            std::string lines[7] = {
                 TextFormat("%.4f %c, %.4f %c", std::fabs(mLat), mLat >= 0 ? 'N' : 'S', std::fabs(mLon), mLon >= 0 ? 'E' : 'W'),
                 TextFormat("%s %.0f m", e > 0 ? "Elevation" : "Depth", std::fabs(e)),
                 TextFormat("Plate %d (%s), moving %.1f cm/yr", app.world.plateId[c] + 1, pl.continental ? "continental" : "oceanic", v.length() * 5),
@@ -1906,12 +2326,13 @@ int main() {
                 TextFormat("Nearest plate edge: %.0f km%s", app.world.distBoundaryKm[c],
                     app.world.discharge.empty() || app.world.elev[c] <= 0 ? "" :
                     app.world.lakeType[c] == 1 ? "   Lake" : app.world.lakeType[c] == 2 ? "   Salt flat" :
-                    app.world.discharge[c] > 40 ? TextFormat("   River flow %.0f m3/s", app.world.discharge[c]) : ""), clim};
+                    app.world.discharge[c] > 40 ? TextFormat("   River flow %.0f m3/s", app.world.discharge[c]) : ""), clim, windLine};
             int tw = 0;
             for (auto& s : lines) tw = std::max(tw, uiMeasure(s.c_str(), fs));
-            int bh = 6 * 20 + 16;
+            int nl = windLine.empty() ? 6 : 7;
+            int bh = nl * 20 + 16;
             theme::card(Rectangle{(float)sw - tw - 34, (float)sh - bh - 42, (float)tw + 24, (float)bh});
-            for (int i = 0; i < 6; i++) uiText(lines[i].c_str(), sw - tw - 22, sh - bh - 34 + i * 20, fs, i == 1 ? theme::kAccentHi : theme::kText);
+            for (int i = 0; i < nl; i++) uiText(lines[i].c_str(), sw - tw - 22, sh - bh - 34 + i * 20, fs, i == 1 ? theme::kAccentHi : theme::kText);
         }
         if ((hoverEvent >= 0 || hoverPin >= 0) && hoverCity < 0 && hoverDeposit < 0) {
             std::string t1, t2;
@@ -2127,7 +2548,7 @@ int main() {
         if (++shotFrames == (getenv("WB_FRAMES") ? atoi(getenv("WB_FRAMES")) : 30)) { TakeScreenshot(getenv("WB_SHOT") ? getenv("WB_SHOT") : "shot.png"); break; }
 #endif
         typing = seedEdit || nameEdit || nationNameEdit || nationNotesEdit || cityNameEdit || cityNotesEdit || evTitleEdit || evTextEdit ||
-                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
+                 loreTitleEdit || loreBodyEdit || loreSearchEdit || findEdit || routeNameEdit || cultureNameEdit || religionNameEdit || religionNotesEdit || customNameEdit || customSettingEdit;
 
         // ---- Exports (after the frame, so the message above is visible while it works) ----
         static int exportFrames = 0;

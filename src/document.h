@@ -97,6 +97,16 @@ const char* relationName(Relation r);
 struct NationRelation { int a = 0, b = 0; Relation type = Relation::Alliance; };
 struct Bookmark { std::string name; double lat = 0, lon = 0, zoom = 5; };
 
+// A trade route the user drew or edited. It runs from one city to another through optional
+// waypoints; between points it either finds the best way over the terrain or goes straight.
+struct CustomRoute {
+    int from = -1, to = -1;
+    std::vector<std::pair<double, double>> via;      // waypoints (lat, lon) in order
+    std::string name;
+    int mode = 0;                                    // 0 follow terrain, 1 straight lines as drawn
+    std::vector<std::pair<int, double>> goods;       // good index, tonnes per year (empty = from the simulation)
+};
+
 struct Document {
     int version = 1;
     std::vector<Culture> cultures;
@@ -122,7 +132,8 @@ struct Document {
         return c.population * std::pow(std::max(0.02, std::min(1.0, t)), 1.4);
     }
     CityPlan* planFor(int city) { for (auto& p : plans) if (p.city == city) return &p; return nullptr; }
-    std::vector<std::pair<int, int>> customRoutes;   // city index pairs
+    std::vector<CustomRoute> customRoutes;
+    std::vector<std::pair<int, int>> hiddenRoutes;   // simulated routes (city pairs) the user removed
 
     void ensureOwner(int cells) {
         if ((int)owner.size() != cells) owner.assign(cells, 0);
@@ -137,12 +148,20 @@ struct Document {
     void removeCity(int c) {
         if (c < 0 || c >= (int)cities.size()) return;
         cities.erase(cities.begin() + c);
-        std::vector<std::pair<int, int>> keep;
-        for (auto& r : customRoutes) {
-            if (r.first == c || r.second == c) continue;
-            keep.push_back({r.first > c ? r.first - 1 : r.first, r.second > c ? r.second - 1 : r.second});
+        std::vector<CustomRoute> keep;
+        for (auto r : customRoutes) {
+            if (r.from == c || r.to == c) continue;
+            if (r.from > c) r.from--;
+            if (r.to > c) r.to--;
+            keep.push_back(r);
         }
         customRoutes.swap(keep);
+        std::vector<std::pair<int, int>> kh;
+        for (auto r : hiddenRoutes) {
+            if (r.first == c || r.second == c) continue;
+            kh.push_back({r.first > c ? r.first - 1 : r.first, r.second > c ? r.second - 1 : r.second});
+        }
+        hiddenRoutes.swap(kh);
         std::vector<CityPlan> kp;
         for (auto& p : plans) { if (p.city == c) continue; if (p.city > c) p.city--; kp.push_back(p); }
         plans.swap(kp);
