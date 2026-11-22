@@ -12,6 +12,7 @@
 #include "webview.h"
 #include "sim.h"
 #include "codex.h"
+#include "timeline.h"
 #include <ctime>
 #include "characters.h"
 #include "persistence.h"
@@ -487,6 +488,7 @@ int main() {
     bool showMini = true, showCompass = false, showTitle = false, findEdit = false;
     CharUI charUi;
     CodexUI codexUi;
+    TimelineView timeline; bool timelineOpen = false; char ageBuf[64] = "The Age of Kings"; bool ageEdit = false; int ageStart = -500, ageEnd = 0; bool ageStartEdit = false, ageEndEdit = false;
     bool calendarTyping = false;
     bool camFollow = true, showNews = true; int followShow = -1; double lastTerritoryPaint = 0;
     WebView web;
@@ -633,6 +635,11 @@ int main() {
         if (followShow >= 0) { auto* f = app.doc.character(followShow); printf("FOLLOW %s alive=%d\n", f->name.c_str(), f->alive(app.doc.simYear)); for (auto& e : f->log) printf("   %d/%d %s\n", e.year, e.month, e.text.c_str()); }
         map.invalidateAll(); app.labelsDirty = true;
     }
+    if (getenv("WB_TIMELINE")) {
+        timelineOpen = true;
+        app.doc.ages.push_back({"Age of Founding", -1500, -600, 200, 160, 100});
+        app.doc.ages.push_back({"Age of Kings", -600, 60, 150, 170, 210});
+    }
     if (getenv("WB_ARTICLE")) {
         Article a; a.kind = LoreKind::Organization; a.title = "The Silver Hand"; a.tags = "faction, secret society";
         a.body = "## Purpose\nA league of merchants who quietly fund wars on both sides, and profit from the [[Iron Road]].\n\n## History\nFounded in the ashes of the [[Fall of Jajie]], the Hand began as a burial society.\n\n## Members\nNo member knows more than three others.";
@@ -734,8 +741,9 @@ int main() {
         const bool overHud = CheckCollisionPointRec(mouse, clockRect) || (anyFollowed && tab != TabWeb && CheckCollisionPointRec(mouse, followRect)) ||
                              (showNews && app.doc.simStarted && !app.sim.news.empty() && tab != TabWeb && CheckCollisionPointRec(mouse, newsRect));
         const bool lorePage = tab == TabLore && loreSel >= 0 && loreSel < (int)app.doc.articles.size() && codexUi.pageOpen && loreTool == 0;
-        const bool mapHidden = tab == TabWeb || lorePage;
-        const bool overPanel = mouse.x < panel.x + panel.width || overChips || tab == TabWeb || overHud || lorePage;   // the web takes over the map area
+        const bool timelinePage = tab == TabHistory && timelineOpen;
+        const bool mapHidden = tab == TabWeb || lorePage || timelinePage;
+        const bool overPanel = mouse.x < panel.x + panel.width || overChips || tab == TabWeb || overHud || lorePage || timelinePage;   // the web takes over the map area
         const double minZoom = sh / 180.0, maxZoom = TileMap::TILE / 90.0 * (1 << TileMap::MAX_LEVEL) * 2;
         const bool sculptTab = (tab == TabSculpt);
         const int activeTool = sculptTab ? tool : 0;
@@ -1563,6 +1571,13 @@ int main() {
         }
 
         if (lorePage) codexPage(codexUi, app.doc, loreSel, Rectangle{panel.x + panel.width, 0, (float)sw - panel.x - panel.width, (float)sh - 30});
+        if (timelinePage) {
+            int y2 = app.doc.currentYear;
+            int ev = timeline.frame(app.doc, Rectangle{panel.x + panel.width, 0, (float)sw - panel.x - panel.width, (float)sh - 30},
+                                    mouse.x > panel.x + panel.width && !typing, y2);
+            if (ev >= 0) eventSel = ev;
+            if (y2 != app.doc.currentYear && !(app.doc.simStarted && app.doc.simSpeed > 0)) app.doc.currentYear = y2;
+        }
         if (tab == TabWeb) {
             web.frame(app.doc, year, Rectangle{panel.x + panel.width, 0, (float)sw - panel.x - panel.width, (float)sh - 30}, dt,
                       mouse.x > panel.x + panel.width && !typing && !overHud);
@@ -2624,6 +2639,7 @@ int main() {
                 }
             }
         } else if (tab == TabHistory) {
+            calendarTyping = false;
             L.heading("LIVING WORLD");
             if (!app.doc.simStarted) {
                 L.note("Let time run: people are born, marry, trade, scheme and die; rulers are succeeded or overthrown; nations go to war, rebel and fall. Everything important is written into this timeline.");
@@ -2648,6 +2664,42 @@ int main() {
                 L.label(TextFormat("Nations: %d standing, %d fallen", (int)app.doc.nations.size() - fallen, fallen));
                 if (L.button("Skip ahead 10 years")) { for (int k = 0; k < 10; k++) app.sim.advanceDays(app.doc, app.world, 12.0 * app.doc.daysPerMonth); map.invalidateAll(); app.labelsDirty = true; }
             }
+            L.heading("TIMELINE VIEW");
+            {
+                float bw = (L.w - 8) / 2;
+                if (GuiButton(Rectangle{L.x, L.y, bw, 30}, timelineOpen ? "Show the map" : "Open the timeline")) { timelineOpen = !timelineOpen; timeline.fitted = false; }
+                if (GuiButton(Rectangle{L.x + bw + 8, L.y, bw, 30}, "Fit everything")) timeline.fitted = false;
+                L.y += 38;
+                if (timelineOpen) {
+                    L.check("Nations and rulers", &timeline.showNations);
+                    L.check("Lives of your people", &timeline.showPeople);
+                    L.note("Scroll to zoom, drag to slide. Drag the gold line to move through the years (while time is paused). Click an event to open it.");
+                }
+                drawTextK(FontKind::UiBold, "Ages", {L.x, L.y + 2}, 14, theme::kTeal); L.y += 22;
+                int removeAge = -1;
+                for (int i = 0; i < (int)app.doc.ages.size(); i++) {
+                    auto& a = app.doc.ages[i];
+                    DrawRectangleRounded({L.x, L.y + 3, 14, 14}, 0.3f, 4, Color{a.r, a.g, a.b, 255});
+                    drawTextK(FontKind::Ui, TextFormat("%s  (%d to %d)", a.name.c_str(), a.start, a.end), {L.x + 22, L.y + 1}, 14, theme::kText);
+                    if (GuiButton(Rectangle{L.x + L.w - 24, L.y, 24, 22}, "x")) removeAge = i;
+                    L.y += 26;
+                }
+                if (removeAge >= 0) app.doc.ages.erase(app.doc.ages.begin() + removeAge);
+                if (GuiTextBox(Rectangle{L.x, L.y, L.w, 26}, ageBuf, 63, ageEdit)) ageEdit = !ageEdit;
+                L.y += 30;
+                drawTextK(FontKind::Ui, "From", {L.x, L.y + 5}, 14, theme::kMuted);
+                if (GuiValueBox(Rectangle{L.x + 44, L.y, 80, 26}, NULL, &ageStart, -100000, 100000, ageStartEdit)) ageStartEdit = !ageStartEdit;
+                drawTextK(FontKind::Ui, "to", {L.x + 132, L.y + 5}, 14, theme::kMuted);
+                if (GuiValueBox(Rectangle{L.x + 152, L.y, 80, 26}, NULL, &ageEnd, -100000, 100000, ageEndEdit)) ageEndEdit = !ageEndEdit;
+                if (GuiButton(Rectangle{L.x + L.w - 80, L.y, 80, 26}, "Add age")) {
+                    Document::Age a; a.name = ageBuf; a.start = std::min(ageStart, ageEnd); a.end = std::max(ageStart, ageEnd);
+                    uint32_t h = 2166136261u; for (char ch : a.name) { h ^= (unsigned char)ch; h *= 16777619u; }
+                    a.r = (unsigned char)(120 + h % 120); a.g = (unsigned char)(100 + (h >> 8) % 120); a.b = (unsigned char)(70 + (h >> 16) % 120);
+                    app.doc.ages.push_back(a);
+                }
+                L.y += 34;
+                calendarTyping = calendarTyping || ageEdit || ageStartEdit || ageEndEdit;
+            }
             L.heading("CALENDAR");
             {
                 float dpm = (float)app.doc.daysPerMonth;
@@ -2663,7 +2715,7 @@ int main() {
                 }
                 L.y += 6 * 30 + 4;
                 L.note("Click a month to rename it (Enter to finish). Your calendar is used for every date in the living world.");
-                calendarTyping = monthEdit >= 0;
+                calendarTyping = calendarTyping || monthEdit >= 0;
             }
             L.heading("TIMELINE");
             float yUi = (float)app.doc.currentYear;

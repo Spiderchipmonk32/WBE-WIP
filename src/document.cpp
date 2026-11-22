@@ -87,6 +87,7 @@ void writeDocument(std::ostream& o, const Document& doc) {
     o << "sim " << doc.simYear << " " << doc.simMonth << " " << doc.simDay << " " << (doc.simStarted ? 1 : 0) << " " << doc.simSpeed << " "
       << doc.simBase << " " << (doc.simCatchUp ? 1 : 0) << " " << doc.simWallClock << " " << doc.daysPerMonth << "\n";
     for (auto& m : doc.monthNames) o << "month " << quote(m) << "\n";
+    for (auto& a : doc.ages) o << "ageera " << a.start << " " << a.end << " " << (int)a.r << " " << (int)a.g << " " << (int)a.b << " " << quote(a.name) << "\n";
     for (const Character& c : doc.characters) {
         o << "char " << c.id << " " << c.sex << " " << c.born << " " << c.died << " " << (int)c.role << " " << c.culture << " " << c.nation << " "
           << c.religion << " " << c.city << " " << c.wealth << " " << c.renown << " " << c.health << " " << (c.followed ? 1 : 0) << " "
@@ -216,6 +217,14 @@ bool readDocumentLine(const std::string& key, std::istringstream& in, const std:
         in >> doc.simYear >> doc.simMonth >> doc.simDay >> st >> doc.simSpeed >> doc.simBase >> cu >> doc.simWallClock >> doc.daysPerMonth;
         doc.simStarted = st != 0; doc.simCatchUp = cu != 0;
         doc.daysPerMonth = std::max(1, std::min(60, doc.daysPerMonth));
+        return true;
+    }
+    if (key == "ageera") {
+        Document::Age a; int r, g, b;
+        in >> a.start >> a.end >> r >> g >> b;
+        a.r = (unsigned char)r; a.g = (unsigned char)g; a.b = (unsigned char)b;
+        size_t pos = (size_t)in.tellg();
+        if (in && pos != std::string::npos && unquote(line, pos, a.name)) doc.ages.push_back(a);
         return true;
     }
     if (key == "month") { std::string m; size_t pos = (size_t)in.tellg(); if (pos != std::string::npos && unquote(line, pos, m)) doc.monthNames.push_back(m); return true; }

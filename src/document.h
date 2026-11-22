@@ -193,6 +193,8 @@ struct Document {
     CityPlan* planFor(int city) { for (auto& p : plans) if (p.city == city) return &p; return nullptr; }
     std::vector<CustomRoute> customRoutes;
     std::vector<Character> characters;
+    struct Age { std::string name; int start = 0, end = 100; unsigned char r = 180, g = 140, b = 90; };
+    std::vector<Age> ages;          // named eras on the timeline
     // ---- living world ----
     int simYear = 0, simMonth = 0, simDay = 0;   // where the simulation has reached
     bool simStarted = false;
