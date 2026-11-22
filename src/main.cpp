@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include <map>
 #include <string>
 
 namespace {
@@ -36,11 +37,25 @@ const char* formatKm(double km) {
 
 double wrapLon(double lon) { return lon - 360.0 * std::floor((lon + 180.0) / 360.0); }
 
+// 1234567 -> "1,234,567"
+const char* withCommas(double v) {
+    static char buf[8][32]; static int k = 0;
+    char* out = buf[k = (k + 1) % 8];
+    char tmp[32]; snprintf(tmp, sizeof tmp, "%.0f", std::fabs(v));
+    int n = (int)strlen(tmp), o = 0;
+    if (v < 0) out[o++] = '-';
+    for (int i = 0; i < n; i++) { out[o++] = tmp[i]; if ((n - i - 1) % 3 == 0 && i < n - 1) out[o++] = ','; }
+    out[o] = 0;
+    return out;
+}
 const char* formatTonnes(double t) {
     if (t >= 1e9) return TextFormat("%.1f billion t", t / 1e9);
     if (t >= 1e6) return TextFormat("%.1f million t", t / 1e6);
     if (t >= 1e3) return TextFormat("%.1f thousand t", t / 1e3);
-    return TextFormat("%.0f t", t);
+    if (t >= 10) return TextFormat("%.0f t", t);
+    if (t >= 1) return TextFormat("%.1f t", t);
+    if (t >= 0.001) return TextFormat("%.0f kg", t * 1000);
+    return TextFormat("%.0f g", t * 1e6);
 }
 
 struct Theme { Color bg, grid, text; };
@@ -444,7 +459,22 @@ int main() {
             }
         }
     }
-    if (const char* c = getenv("WB_CITY")) citySel = atoi(c);
+    if (const char* c = getenv("WB_CITY")) {
+        citySel = atoi(c);
+        if (citySel < (int)app.doc.cities.size()) { view.centerLat = app.doc.cities[citySel].lat; view.centerLon = app.doc.cities[citySel].lon - 15; view.pxPerDeg *= 2.5; }
+    }
+    if (getenv("WB_POPS")) {
+        for (int e = 0; e < 5; e++) {
+            eraPopulations(app.doc, app.world, e);
+            std::vector<int> p; long long tot = 0;
+            for (auto& c : app.doc.cities) { p.push_back(c.population); tot += c.population; }
+            std::sort(p.rbegin(), p.rend());
+            printf("era %d: %zu cities, total %lld, top:", e, p.size(), tot);
+            for (int k = 0; k < 8 && k < (int)p.size(); k++) printf(" %d", p[k]);
+            printf(" median %d smallest %d\n", p[p.size() / 2], p.back());
+        }
+        eraPopulations(app.doc, app.world, app.doc.era);
+    }
     if (const char* mo = getenv("WB_MONTH")) monthUi = (float)atof(mo);
     if (const char* z = getenv("WB_ZOOM")) view.pxPerDeg *= atof(z);
     if (const char* la = getenv("WB_LAT")) view.centerLat = atof(la);
@@ -1763,6 +1793,19 @@ int main() {
             bool prevSites = showSites;
             L.check("Show good sites for new cities", &showSites);
             if (showSites && (!prevSites || sites.empty())) sites = suggestSites(app.doc, app.world, 40);
+            {
+                int eraUi = app.doc.era;
+                GuiComboBox(Rectangle{L.x, L.y, L.w, 28}, "Era: Ancient;Era: Medieval;Era: Early modern;Era: Industrial;Era: Modern", &eraUi);
+                L.y += 36;
+                if (eraUi != app.doc.era) { app.doc.era = eraUi; app.econ.valid = false; }
+                double lo, hi; eraCityRange(app.doc.era, lo, hi);
+                if (!app.doc.cities.empty() && L.button("Realistic populations for this era")) {
+                    eraPopulations(app.doc, app.world, app.doc.era);
+                    app.econ.valid = false;
+                    setStatus(TextFormat("Populations set for the %s era", eraName((Era)app.doc.era)));
+                }
+                L.note(TextFormat("In this era towns start around %s people and the largest cities reach about %s.", withCommas(lo), withCommas(hi)));
+            }
             std::vector<int> order;
             for (int i = 0; i < (int)app.doc.cities.size(); i++) order.push_back(i);
             std::sort(order.begin(), order.end(), [&](int a, int b) { return app.doc.cities[a].population > app.doc.cities[b].population; });
@@ -1788,35 +1831,160 @@ int main() {
             }
             if (citySel >= 0) {
                 City& c = app.doc.cities[citySel];
+                const int era = std::max(0, std::min(4, app.doc.era));
+                L.heading("CITY");
                 GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Name");
                 if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60, 28}, cityNameBuf, 63, cityNameEdit)) cityNameEdit = !cityNameEdit;
                 c.name = cityNameBuf;
-                L.y += 34;
-                float lp = (float)std::log10(std::max(100, c.population));
-                L.label(TextFormat("Population: %d", c.population)); L.slider(&lp, 2, 7.2f);
-                c.population = (int)std::pow(10.0, (double)lp);
+                L.y += 36;
+                if (c.nation >= 0 && c.nation < (int)app.doc.nations.size()) {
+                    drawFlag(Rectangle{L.x, L.y + 2, 36, 24}, app.doc.nations[c.nation]);
+                    drawTextK(FontKind::UiBold, app.doc.nations[c.nation].name.c_str(), {L.x + 46, L.y + 1}, 17, theme::kText);
+                    drawTextK(FontKind::Ui, c.capital ? "Capital city" : kGovernments[app.doc.nations[c.nation].government], {L.x + 46, L.y + 20}, 13, theme::kMuted);
+                    L.y += 44;
+                } else L.label("Nation: independent");
+                double popNow = app.doc.populationAt(c, year);
+                L.label(TextFormat("Population: %s", withCommas(popNow)));
+                {
+                    // where it ranks, and what that size means in this era
+                    int rankWorld = 1, rankNation = 1, inNation = 0;
+                    for (auto& o : app.doc.cities) {
+                        if (&o == &c) continue;
+                        if (o.population > c.population) rankWorld++;
+                        if (o.nation == c.nation) { inNation++; if (o.population > c.population) rankNation++; }
+                    }
+                    L.note(TextFormat("%s for the %s era. #%d of %d in its nation, #%d in the world.", citySizeClass(c.population, era),
+                                      eraName((Era)era), rankNation, inNation + 1, rankWorld));
+                }
+                float lp = (float)std::log10(std::max(100, c.population)), lp0 = lp;
+                L.slider(&lp, 2, 7.6f);
+                if (lp != lp0) {   // round to two significant figures while dragging
+                    double p = std::pow(10.0, (double)lp), mag = std::pow(10.0, std::floor(lp) - 1);
+                    c.population = (int)(std::round(p / mag) * mag);
+                }
+                if (c.founded > -99999) L.label(TextFormat("Founded: %d (%d years ago)", c.founded, std::max(0, year - c.founded)));
                 bool cap = c.capital;
                 L.check("Capital of its nation", &cap);
                 if (cap != c.capital) {
                     if (cap) for (auto& o : app.doc.cities) if (o.nation == c.nation) o.capital = false;
                     c.capital = cap;
                 }
-                L.label(TextFormat("Nation: %s", c.nation >= 0 && c.nation < (int)app.doc.nations.size() ? app.doc.nations[c.nation].name.c_str() : "independent"));
-                L.label(TextFormat("Location: %.2f, %.2f", c.lat, c.lon));
-                if (app.econ.valid) {
-                    auto ex = app.econ.topExports(citySel, 3), im = app.econ.topImports(citySel, 3);
-                    std::string es, is;
-                    for (auto& g : ex) { if (!es.empty()) es += ", "; es += goodDefs()[g.first].name; }
-                    for (auto& g : im) { if (!is.empty()) is += ", "; is += goodDefs()[g.first].name; }
-                    L.note(("Exports: " + (es.empty() ? std::string("nothing") : es)).c_str());
-                    L.note(("Imports: " + (is.empty() ? std::string("nothing") : is)).c_str());
+                // ---- the place ----
+                L.heading("PLACE");
+                {
+                    int cell = World::nearestCell(c.lat, c.lon);
+                    double el = app.planet.elevation(TileMap::dirFromLatLon(c.lat, c.lon), 6);
+                    L.label(TextFormat("Elevation: %.0f m", std::max(0.0, el)));
+                    if (!app.world.biome.empty()) {
+                        L.label(TextFormat("Land: %s", biomeName((Biome)app.world.biome[cell])));
+                        float lo = 1e9f, hi = -1e9f;
+                        for (int m = 0; m < 12; m++) { lo = std::min(lo, app.world.tempMonth[m][cell]); hi = std::max(hi, app.world.tempMonth[m][cell]); }
+                        L.label(TextFormat("Climate: %.0f to %.0f \xC2\xB0" "C", lo, hi));
+                        L.label(TextFormat("Rain: %.0f mm/yr", app.world.rainfallYear[cell]));
+                    }
+                    std::string water;
+                    if (!app.world.distOceanKm.empty() && app.world.distOceanKm[cell] < 40) water = "Sea port";
+                    if (!app.world.discharge.empty()) {
+                        double q = 0;
+                        for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+                            int x = cell % World::W + dx, y = cell / World::W + dy;
+                            if (y >= 0 && y < World::H) q = std::max(q, (double)app.world.discharge[World::idx(x, y)]);
+                        }
+                        if (q > 100) water += water.empty() ? "River town" : ", on a river";
+                    }
+                    if (!water.empty()) L.label(TextFormat("Water: %s", water.c_str()));
+                    L.label(TextFormat("Location: %.2f\xC2\xB0%c %.2f\xC2\xB0%c", std::fabs(c.lat), c.lat >= 0 ? 'N' : 'S', std::fabs(c.lon), c.lon >= 0 ? 'E' : 'W'));
+                    auto near = app.world.depositsNear(c.lat, c.lon, 250, 40);
+                    std::map<std::string, double> res;
+                    for (int d : near) res[resourceDefs()[app.world.deposits[d].res].name] += app.world.deposits[d].tonnes;
+                    if (!res.empty()) {
+                        std::vector<std::pair<double, std::string>> v;
+                        for (auto& kv : res) v.push_back({kv.second, kv.first});
+                        std::sort(v.rbegin(), v.rend());
+                        std::string t;
+                        for (size_t k = 0; k < v.size() && k < 6; k++) { if (k) t += ", "; t += v[k].second; }
+                        L.note(("Resources within 250 km: " + t).c_str());
+                    }
                 }
+                // ---- trade ----
+                L.heading("TRADE");
+                if (!app.econ.valid || app.econCities != app.doc.cities.size()) {
+                    L.note("Work out what this city makes, buys and sells:");
+                    if (L.primary("Simulate trade", 32)) { app.simulateTrade(); setStatus("Trade simulated"); }
+                } else {
+                    const auto& G = goodDefs();
+                    // per good: tonnes and the biggest partner
+                    auto flows = [&](bool exports) {
+                        std::map<int, std::pair<double, std::pair<double, int>>> m;   // good -> (tonnes, (best tonnes, partner))
+                        for (auto& r : app.econ.routes) {
+                            if ((exports ? r.from : r.to) != citySel) continue;
+                            int partner = exports ? r.to : r.from;
+                            for (auto& g : r.goods) {
+                                auto& e = m[g.first];
+                                e.first += g.second;
+                                if (g.second > e.second.first) e.second = {g.second, partner};
+                            }
+                        }
+                        std::vector<std::pair<int, std::pair<double, int>>> v;
+                        for (auto& kv : m) v.push_back({kv.first, {kv.second.first, kv.second.second.second}});
+                        std::sort(v.begin(), v.end(), [&](auto& a, auto& b) { return a.second.first * G[a.first].basePrice > b.second.first * G[b.first].basePrice; });
+                        return v;
+                    };
+                    auto table = [&](const char* title, const std::vector<std::pair<int, std::pair<double, int>>>& v, bool exports) {
+                        drawTextK(FontKind::UiBold, title, {L.x, L.y}, 15, theme::kTeal);
+                        L.y += 22;
+                        if (v.empty()) { L.note(exports ? "Sells nothing to other cities." : "Buys nothing from other cities."); return; }
+                        for (size_t k = 0; k < v.size() && k < 6; k++) {
+                            const auto& e = v[k];
+                            drawTextK(FontKind::Ui, G[e.first].name, {L.x, L.y}, 15, theme::kText);
+                            const char* t = TextFormat("%s/yr", formatTonnes(e.second.first));
+                            Vector2 ts = measureTextK(FontKind::UiBold, t, 15);
+                            drawTextK(FontKind::UiBold, t, {L.x + L.w - ts.x, L.y}, 15, Color{240, 230, 210, 255});
+                            L.y += 18;
+                            if (e.second.second >= 0 && e.second.second < (int)app.doc.cities.size())
+                                drawTextK(FontKind::Ui, TextFormat(exports ? "mostly to %s" : "mostly from %s", app.doc.cities[e.second.second].name.c_str()), {L.x + 10, L.y}, 13, theme::kMuted);
+                            L.y += 20;
+                        }
+                        L.y += 4;
+                    };
+                    auto ex = flows(true), im = flows(false);
+                    double exV = 0, imV = 0;
+                    for (auto& e : ex) exV += e.second.first * G[e.first].basePrice;
+                    for (auto& e : im) imV += e.second.first * G[e.first].basePrice;
+                    L.label(TextFormat("Trade per year: %s coins", withCommas(exV + imV)));
+                    L.label(TextFormat("Balance: %s%s coins", exV >= imV ? "+" : "-", withCommas(std::fabs(exV - imV))));
+                    table("Exports", ex, true);
+                    table("Imports", im, false);
+                    // what it makes itself
+                    if (citySel < (int)app.econ.production.size()) {
+                        std::vector<std::pair<double, int>> made;
+                        for (int g = 0; g < (int)G.size(); g++) if (app.econ.production[citySel][g] > 0.5) made.push_back({app.econ.production[citySel][g] * G[g].basePrice, g});
+                        std::sort(made.rbegin(), made.rend());
+                        std::string t;
+                        for (size_t k = 0; k < made.size() && k < 6; k++) { if (k) t += ", "; t += G[made[k].second].name; }
+                        if (!t.empty()) L.note(("Makes: " + t).c_str());
+                    }
+                    // partners
+                    std::map<int, double> part;
+                    for (auto& r : app.econ.routes) {
+                        if (r.from == citySel) part[r.to] += r.value; else if (r.to == citySel) part[r.from] += r.value;
+                    }
+                    if (!part.empty()) {
+                        std::vector<std::pair<double, int>> pv;
+                        for (auto& kv : part) pv.push_back({kv.second, kv.first});
+                        std::sort(pv.rbegin(), pv.rend());
+                        std::string t;
+                        for (size_t k = 0; k < pv.size() && k < 5; k++) { if (k) t += ", "; t += app.doc.cities[pv[k].second].name; }
+                        L.note(("Main partners: " + t).c_str());
+                    }
+                }
+                L.heading("NOTES");
                 GuiLabel(Rectangle{L.x, L.y, 60, 28}, "Notes");
                 if (GuiTextBox(Rectangle{L.x + 60, L.y, L.w - 60, 28}, cityNotesBuf, 255, cityNotesEdit)) cityNotesEdit = !cityNotesEdit;
                 c.notes = cityNotesBuf;
-                L.y += 34;
+                L.y += 36;
                 float bw2 = (L.w - 8) / 2;
-                if (L.button("Open city editor", 32)) { map.waitIdle(); cityEd.open(citySel, app.planet, app.world, app.doc); }
+                if (L.primary("Open city editor", 34)) { map.waitIdle(); cityEd.open(citySel, app.planet, app.world, app.doc); }
                 if (GuiButton(Rectangle{L.x, L.y, bw2, 28}, "Go to city")) { view.centerLat = c.lat; view.centerLon = c.lon; view.pxPerDeg = std::max(view.pxPerDeg, 40.0); }
                 if (GuiButton(Rectangle{L.x + bw2 + 8, L.y, bw2, 28}, "Delete city")) { app.doc.removeCity(citySel); citySel = -1; }
                 L.y += 36;
@@ -2283,6 +2451,39 @@ int main() {
             if (vx + vw > miniRect.x + miniRect.width) DrawRectangleLinesEx({vx - miniRect.width, vy, std::max(4.f, vw), std::max(4.f, vh)}, 2, YELLOW);
             EndScissorMode();
         }
+        // ---- Card beside the selected city ----
+        if (citySel >= 0 && citySel < (int)app.doc.cities.size() && (tab == TabCities || tab == TabTrade) && showCities) {
+            const City& c = app.doc.cities[citySel];
+            Vector2 p = toScreen(c.lat, c.lon);
+            if (p.x > panel.x + panel.width && p.x < sw && p.y > 0 && p.y < sh) {
+                DrawCircleLinesV(p, 11, theme::kAccentHi);
+                DrawCircleLinesV(p, 12, theme::kAccentHi);
+                const int era = std::max(0, std::min(4, app.doc.era));
+                std::vector<std::pair<std::string, Color>> lines;
+                std::string nat = c.nation >= 0 && c.nation < (int)app.doc.nations.size() ? app.doc.nations[c.nation].name : std::string("Independent");
+                lines.push_back({nat + (c.capital ? "  \xE2\x80\xA2  capital" : ""), theme::kMuted});
+                lines.push_back({std::string(citySizeClass(c.population, era)) + " of " + withCommas(app.doc.populationAt(c, year)), theme::kText});
+                if (app.econ.valid && app.econCities == app.doc.cities.size()) {
+                    auto ex = app.econ.topExports(citySel, 3), im = app.econ.topImports(citySel, 3);
+                    auto join = [&](const std::vector<std::pair<int, double>>& v) {
+                        std::string t;
+                        for (auto& g : v) { if (!t.empty()) t += ", "; t += goodDefs()[g.first].name; }
+                        return t.empty() ? std::string("nothing") : t;
+                    };
+                    lines.push_back({"Sells: " + join(ex), Color{150, 220, 170, 255}});
+                    lines.push_back({"Buys: " + join(im), Color{240, 190, 150, 255}});
+                } else lines.push_back({"Simulate trade to see what it buys and sells", theme::kMuted});
+                float tw = measureTextK(FontKind::Serif, c.name.c_str(), 24).x;
+                for (auto& l : lines) tw = std::max(tw, measureTextK(FontKind::Ui, l.first.c_str(), 14).x);
+                float bh = 40 + lines.size() * 19.f + 8;
+                Rectangle box{p.x + 18, p.y - bh / 2, tw + 28, bh};
+                if (box.x + box.width > sw - 8) box.x = p.x - 18 - box.width;
+                box.y = std::max(48.f, std::min(box.y, sh - 40 - bh));
+                theme::card(box, theme::kAccent);
+                drawTextK(FontKind::Serif, c.name.c_str(), {box.x + 14, box.y + 8}, 24, theme::kAccentHi);
+                for (size_t k = 0; k < lines.size(); k++) drawTextK(FontKind::Ui, lines[k].first.c_str(), {box.x + 14, box.y + 40 + k * 19.f}, 14, lines[k].second);
+            }
+        }
         // ---- Readouts ----
         const int fs = 15;
         double kmPerPx = 111.195 * R / 6371.0 * std::cos(view.centerLat * kPi / 180) / view.pxPerDeg;
@@ -2346,12 +2547,12 @@ int main() {
             uiText(t1.c_str(), bx + 10, by + 6, 18, theme::kAccentHi);
             uiText(t2.c_str(), bx + 10, by + 28, 16, theme::kText);
         }
-        if (hoverCity >= 0 && hoverDeposit < 0) {
+        if (hoverCity >= 0 && hoverDeposit < 0 && hoverCity != citySel) {
             const City& c = app.doc.cities[hoverCity];
             std::string t1 = c.name + (c.capital ? " (capital)" : "");
             std::string t2 = app.doc.populationAt(c, year) < c.population
-                ? std::string(TextFormat("Population %.0f in %d (%d today)", app.doc.populationAt(c, year), year, c.population))
-                : std::string(TextFormat("Population %d", c.population));
+                ? std::string(TextFormat("Population %s in %d (%s today)", withCommas(app.doc.populationAt(c, year)), year, withCommas(c.population)))
+                : std::string(TextFormat("%s, population %s", citySizeClass(c.population, app.doc.era), withCommas(c.population)));
             std::string t3 = c.nation >= 0 && c.nation < (int)app.doc.nations.size() ? app.doc.nations[c.nation].name : std::string("Independent");
             int tw = std::max({uiMeasure(t1.c_str(), 18), uiMeasure(t2.c_str(), 18), uiMeasure(t3.c_str(), 18)});
             int bx = (int)mouse.x + 16, by = (int)mouse.y + 10;

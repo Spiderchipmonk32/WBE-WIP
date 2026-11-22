@@ -178,6 +178,77 @@ void generateCities(Document& doc, const World& w, double density, uint32_t seed
             doc.cities.push_back(city);
         }
     }
+    eraPopulations(doc, w, doc.era);
+}
+
+namespace {
+// per era: farmland density (people per km2 of fully habitable land), share living in towns,
+// smallest town, largest city on record
+const double kRural[5] = {12, 18, 28, 65, 140};
+const double kPrimacy[5] = {0.15, 0.13, 0.14, 0.14, 0.16};   // capital's share of the nation's town dwellers
+const double kUrban[5] = {0.07, 0.09, 0.12, 0.35, 0.62};
+const double kMinTown[5] = {600, 800, 1500, 5000, 10000};
+const double kMaxCity[5] = {1.0e6, 0.8e6, 1.2e6, 7.0e6, 35e6};
+}
+
+void eraCityRange(int era, double& smallest, double& largest) {
+    era = std::max(0, std::min(4, era));
+    smallest = kMinTown[era]; largest = kMaxCity[era];
+}
+
+const char* citySizeClass(double p, int era) {
+    era = std::max(0, std::min(4, era));
+    // thresholds scale with the era's biggest cities
+    double big = kMaxCity[era];
+    if (p < big * 0.004) return "Village";
+    if (p < big * 0.02) return "Town";
+    if (p < big * 0.08) return "City";
+    if (p < big * 0.3) return "Great city";
+    return era >= 4 ? "Megacity" : "Metropolis";
+}
+
+void eraPopulations(Document& doc, const World& w, int era) {
+    era = std::max(0, std::min(4, era));
+    if (doc.cities.empty() || w.habitability.empty()) return;
+    const int N = World::W * World::H;
+    const double ck = w.cellKm();
+    std::vector<double> people(doc.nations.size() + 1, 0);   // last slot: unclaimed land
+    for (int i = 0; i < N; i++) {
+        if (w.elev[i] <= 0) continue;
+        double area = ck * ck * std::max(0.02, std::cos(World::cellLat(i / World::W) * kPi / 180));
+        int n = doc.nationAt(i);
+        double h = w.habitability[i];
+        people[n >= 0 && n < (int)doc.nations.size() ? n : doc.nations.size()] += h * h * area * kRural[era];
+    }
+    // cities of each nation, biggest first (keeps the order the user or generator gave them)
+    std::vector<std::vector<int>> byNation(doc.nations.size() + 1);
+    for (int c = 0; c < (int)doc.cities.size(); c++) {
+        int n = doc.cities[c].nation;
+        byNation[n >= 0 && n < (int)doc.nations.size() ? n : doc.nations.size()].push_back(c);
+    }
+    for (size_t n = 0; n < byNation.size(); n++) {
+        auto& v = byNation[n];
+        if (v.empty()) continue;
+        std::sort(v.begin(), v.end(), [&](int a, int b) {
+            if (doc.cities[a].capital != doc.cities[b].capital) return doc.cities[a].capital;
+            return doc.cities[a].population > doc.cities[b].population;
+        });
+        double urban = people[n] * kUrban[era];
+        // independent cities share the unclaimed land's towns, but each only draws on its own area
+        if (n == doc.nations.size()) urban = std::min(urban, v.size() * kMaxCity[era] * 0.02);
+        // rank-size rule anchored on the biggest city: the k-th city is about 1/k^1.1 of the first
+        double first = urban * kPrimacy[era];
+        if (!doc.cities[v[0]].capital) first *= 0.6;
+        for (size_t k = 0; k < v.size(); k++) {
+            uint32_t h = (uint32_t)(v[k] * 2654435761u) ^ 0x9e3779b9u;
+            double noise = 0.8 + 0.4 * ((h >> 8) & 0xffff) / 65535.0;
+            double p = first * std::pow(k + 1.0, -1.1) * (k == 0 ? 1.0 : noise);
+            p = std::max(kMinTown[era], std::min(kMaxCity[era], p));
+            // round to sensible figures
+            double mag = std::pow(10.0, std::floor(std::log10(std::max(1.0, p))) - 1);
+            doc.cities[v[k]].population = (int)std::min(2.0e9, std::round(p / mag) * mag);
+        }
+    }
 }
 
 void nationStats(const Document& doc, const World& w, std::vector<double>& areaKm2, std::vector<long long>& population) {

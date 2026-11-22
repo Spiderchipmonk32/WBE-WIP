@@ -19,3 +19,12 @@ void generateRulers(Document& doc, uint32_t seed);
 const char* rulerTitle(int government, bool female);
 // Relations between neighbouring nations (alliances, rivalries, wars, vassals)
 void generateRelations(Document& doc, uint32_t seed);
+
+// Sets city populations to realistic sizes for an era (0 ancient .. 4 modern): each nation's people
+// come from its farmland, a share of them live in towns, and those are split between its cities by
+// rank (capital biggest), within the range of real cities of that era. Keeps the cities' order.
+void eraPopulations(Document& doc, const World& w, int era);
+// "Village", "Town", "Great city"... for a population in an era
+const char* citySizeClass(double population, int era);
+// Typical range of town populations for an era, for help text
+void eraCityRange(int era, double& smallest, double& largest);
